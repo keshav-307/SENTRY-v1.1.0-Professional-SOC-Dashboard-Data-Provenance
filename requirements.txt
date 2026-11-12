@@ -1,0 +1,10 @@
+# SENTRY v1.0.0 runtime dependencies (versions verified on Windows, Python 3.14.7)
+streamlit==1.63.0
+scapy==2.7.0
+
+# Optional HTTP ingestion API (api.py)
+fastapi==0.141.1
+uvicorn==0.52.4
+
+# Test suite
+pytest==9.2.0

@@ -1,0 +1,28 @@
+{
+  "SSH-BRUTE-001": {
+    "enabled": true,
+    "threshold": 5,
+    "window_seconds": 120
+  },
+  "WEB-SQLI-001": {
+    "enabled": true
+  },
+  "WEB-TRAVERSAL-001": {
+    "enabled": true
+  },
+  "AUTH-COMPROMISE-001": {
+    "enabled": true,
+    "threshold": 5,
+    "window_seconds": 120
+  },
+  "NET-RECON-001": {
+    "enabled": true,
+    "threshold": 10,
+    "window_seconds": 120
+  },
+  "DNS-SUSPICIOUS-001": {
+    "enabled": true,
+    "threshold": 20,
+    "window_seconds": 60
+  }
+}

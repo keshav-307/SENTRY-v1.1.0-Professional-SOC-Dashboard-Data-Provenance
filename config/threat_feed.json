@@ -1,0 +1,5 @@
+{
+  "malicious_ips": [],
+  "suspicious_ips": [],
+  "notes": "Local threat feed used by SENTRY. Add IP addresses you have independently confirmed as malicious or suspicious. An empty feed is normal: SENTRY reports unknown rather than inventing reputation."
+}

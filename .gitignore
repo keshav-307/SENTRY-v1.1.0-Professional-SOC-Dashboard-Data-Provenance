@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local SENTRY data (never commit analyst or capture data)
+sentry.db
+sentry.db-journal
+sentry.db-wal
+sentry.db-shm
+*.db
+
+# Generated logs and reports
+logs/*.log
+reports/*.json
+reports/*.html
+
+# Secrets
+.env
+.dev.vars
+
+# Backups of live source files
+backups/
+
+# Legacy prototype scripts and stale sample reports (superseded by core/)
+src/
+reports/
+
+# Local tool metadata
+.freebuff/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
