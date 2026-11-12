@@ -3,7 +3,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 echo ============================================================
-echo  SENTRY v1.0.0 - Security Monitoring ^& Threat Detection
+echo  SENTRY v1.1.0 - Security Monitoring ^& Threat Detection
 echo ============================================================
 echo.
 

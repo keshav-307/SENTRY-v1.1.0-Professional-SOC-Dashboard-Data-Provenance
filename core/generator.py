@@ -36,6 +36,15 @@ class EventGenerator:
             "developer",
         ]
 
+    @staticmethod
+    def _mark_synthetic(events):
+        """Label generated events as synthetic without changing them."""
+
+        for event in events:
+            event.event_origin = "SYNTHETIC"
+
+        return events
+
     # ---------------------------------------------------------
     # NORMAL TRAFFIC
     # ---------------------------------------------------------
@@ -117,7 +126,7 @@ class EventGenerator:
 
             events.append(event)
 
-        return events
+        return self._mark_synthetic(events)
 
     # ---------------------------------------------------------
     # SSH BRUTE FORCE
@@ -153,7 +162,7 @@ class EventGenerator:
 
             events.append(event)
 
-        return events
+        return self._mark_synthetic(events)
 
     # ---------------------------------------------------------
     # SQL INJECTION
@@ -199,7 +208,7 @@ class EventGenerator:
 
             events.append(event)
 
-        return events
+        return self._mark_synthetic(events)
 
     # ---------------------------------------------------------
     # PATH TRAVERSAL
@@ -244,7 +253,7 @@ class EventGenerator:
 
             events.append(event)
 
-        return events
+        return self._mark_synthetic(events)
 
     # ---------------------------------------------------------
     # MIXED ATTACK CAMPAIGN
@@ -326,7 +335,7 @@ class EventGenerator:
             key=lambda event: event.timestamp
         )
 
-        return events
+        return self._mark_synthetic(events)
 
     # ---------------------------------------------------------
     # INTENSITY CONFIGURATION

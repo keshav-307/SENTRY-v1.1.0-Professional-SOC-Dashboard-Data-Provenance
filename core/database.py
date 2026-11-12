@@ -127,6 +127,17 @@ class SentryDatabase:
                 """
             )
 
+        # Where the event came from (SYNTHETIC / LIVE). Additive only:
+        # historical rows stay NULL and are presented as UNKNOWN rather
+        # than being falsely classified.
+        if "event_origin" not in event_columns:
+            cursor.execute(
+                """
+                ALTER TABLE events
+                ADD COLUMN event_origin TEXT
+                """
+            )
+
         # ---------------------------------------------------------
         # ALERTS TABLE
         # ---------------------------------------------------------
@@ -210,6 +221,16 @@ class SentryDatabase:
                 """
             )
 
+        # Origin of the events that produced the alert. Additive:
+        # historical alerts keep NULL and display as UNKNOWN.
+        if "event_origin" not in columns:
+            cursor.execute(
+                """
+                ALTER TABLE alerts
+                ADD COLUMN event_origin TEXT
+                """
+            )
+
         connection.commit()
         connection.close()
 
@@ -249,6 +270,8 @@ class SentryDatabase:
                 direction,
                 initiated,
 
+                event_origin,
+
                 raw
             )
             VALUES (
@@ -258,6 +281,7 @@ class SentryDatabase:
                 ?,
                 ?, ?, ?, ?, ?,
                 ?, ?,
+                ?,
                 ?
             )
             """,
@@ -287,6 +311,8 @@ class SentryDatabase:
                     if event.initiated is None
                     else int(bool(event.initiated))
                 ),
+
+                event.event_origin,
 
                 event.raw,
             ),
@@ -324,6 +350,8 @@ class SentryDatabase:
                     direction,
                     initiated,
 
+                    event_origin,
+
                     raw
                 )
                 VALUES (
@@ -333,6 +361,7 @@ class SentryDatabase:
                     ?,
                     ?, ?, ?, ?, ?,
                     ?, ?,
+                    ?,
                     ?
                 )
                 """,
@@ -362,6 +391,8 @@ class SentryDatabase:
                         if event.initiated is None
                         else int(bool(event.initiated))
                     ),
+
+                    event.event_origin,
 
                     event.raw,
                 ),
@@ -444,6 +475,265 @@ class SentryDatabase:
         return rows
 
     # =============================================================
+    # DATA ORIGIN / DASHBOARD QUERIES
+    # =============================================================
+
+    @staticmethod
+    def normalise_origin_filter(origin):
+        """Map a dashboard origin filter to a stored value."""
+
+        if origin in ("SYNTHETIC", "LIVE"):
+            return origin
+
+        return "UNKNOWN"
+
+    def get_event_origin_counts(self):
+        """Count events per origin, with NULL treated as UNKNOWN."""
+
+        connection = self.get_connection()
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                CASE
+                    WHEN event_origin IN ('SYNTHETIC', 'LIVE')
+                        THEN event_origin
+                    ELSE 'UNKNOWN'
+                END AS origin,
+                COUNT(*) AS count
+            FROM events
+            GROUP BY origin
+            """
+        )
+
+        rows = cursor.fetchall()
+        connection.close()
+
+        return rows
+
+    def get_alert_origin_counts(self):
+        """Count alerts per originating data source."""
+
+        connection = self.get_connection()
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                CASE
+                    WHEN event_origin IN ('SYNTHETIC', 'LIVE')
+                        THEN event_origin
+                    ELSE 'UNKNOWN'
+                END AS origin,
+                COUNT(*) AS count
+            FROM alerts
+            GROUP BY origin
+            """
+        )
+
+        rows = cursor.fetchall()
+        connection.close()
+
+        return rows
+
+    def get_event_timeline(self, hours=24):
+        """
+        Hourly event counts per origin for the recent activity chart.
+
+        Bounded by time so the dashboard never scans the full table.
+        """
+
+        from datetime import datetime, timedelta
+
+        since = (
+            datetime.now() - timedelta(hours=hours)
+        ).isoformat()
+
+        connection = self.get_connection()
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            SELECT
+                substr(timestamp, 1, 13) AS hour,
+                CASE
+                    WHEN event_origin IN ('SYNTHETIC', 'LIVE')
+                        THEN event_origin
+                    ELSE 'UNKNOWN'
+                END AS origin,
+                COUNT(*) AS count
+            FROM events
+            WHERE timestamp >= ?
+            GROUP BY hour, origin
+            ORDER BY hour ASC
+            """,
+            (since,),
+        )
+
+        rows = cursor.fetchall()
+        connection.close()
+
+        return rows
+
+    def get_top_source_ips(self, limit=10):
+        """Most frequent source addresses across stored events."""
+
+        connection = self.get_connection()
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            SELECT source_ip, COUNT(*) AS count
+            FROM events
+            WHERE source_ip IS NOT NULL AND source_ip != ''
+            GROUP BY source_ip
+            ORDER BY count DESC, source_ip ASC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+
+        rows = cursor.fetchall()
+        connection.close()
+
+        return rows
+
+    def get_top_destination_ports(self, limit=10):
+        """Most frequent destination ports across stored events."""
+
+        connection = self.get_connection()
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            SELECT destination_port, COUNT(*) AS count
+            FROM events
+            WHERE destination_port IS NOT NULL
+            GROUP BY destination_port
+            ORDER BY count DESC, destination_port ASC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+
+        rows = cursor.fetchall()
+        connection.close()
+
+        return rows
+
+    def get_rule_distribution(self, limit=10):
+        """Alert counts per detection rule."""
+
+        connection = self.get_connection()
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            SELECT rule_id, alert_type, COUNT(*) AS count
+            FROM alerts
+            GROUP BY rule_id, alert_type
+            ORDER BY count DESC, rule_id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+
+        rows = cursor.fetchall()
+        connection.close()
+
+        return rows
+
+    @staticmethod
+    def _event_filters(origin, search):
+        """Build shared WHERE clauses for event explorer queries."""
+
+        clauses = []
+        params = []
+
+        if origin in ("SYNTHETIC", "LIVE"):
+            clauses.append("event_origin = ?")
+            params.append(origin)
+
+        elif origin == "UNKNOWN":
+            clauses.append(
+                "(event_origin IS NULL "
+                "OR event_origin NOT IN ('SYNTHETIC', 'LIVE'))"
+            )
+
+        if search:
+            like = f"%{search.lower()}%"
+
+            clauses.append(
+                "("
+                "LOWER(COALESCE(source_ip, '')) LIKE ? OR "
+                "LOWER(COALESCE(destination_ip, '')) LIKE ? OR "
+                "LOWER(COALESCE(event_type, '')) LIKE ? OR "
+                "LOWER(COALESCE(source, '')) LIKE ? OR "
+                "LOWER(COALESCE(username, '')) LIKE ? OR "
+                "LOWER(COALESCE(path, '')) LIKE ?"
+                ")"
+            )
+
+            params.extend([like] * 6)
+
+        where = (
+            "WHERE " + " AND ".join(clauses)
+            if clauses
+            else ""
+        )
+
+        return where, params
+
+    def count_events(self, origin="All", search=""):
+        """Count events matching the explorer filters."""
+
+        where, params = self._event_filters(origin, search)
+
+        connection = self.get_connection()
+        cursor = connection.cursor()
+
+        cursor.execute(
+            f"SELECT COUNT(*) FROM events {where}",
+            params,
+        )
+
+        count = cursor.fetchone()[0]
+        connection.close()
+
+        return count
+
+    def get_events_page(
+        self,
+        origin="All",
+        search="",
+        limit=100,
+        offset=0,
+    ):
+        """Return one bounded, filtered page of events."""
+
+        where, params = self._event_filters(origin, search)
+
+        connection = self.get_connection()
+        cursor = connection.cursor()
+
+        cursor.execute(
+            f"""
+            SELECT *
+            FROM events
+            {where}
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            params + [limit, offset],
+        )
+
+        rows = cursor.fetchall()
+        connection.close()
+
+        return rows
+
+    # =============================================================
     # ALERT METHODS
     # =============================================================
 
@@ -465,9 +755,10 @@ class SentryDatabase:
                 analyst_notes,
                 recommended_action,
                 evidence_json,
-                threat_intel_json
+                threat_intel_json,
+                event_origin
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 alert.alert_type,
@@ -482,6 +773,7 @@ class SentryDatabase:
                 None,
                 self._evidence_json(alert),
                 self._threat_intel_json(alert),
+                alert.event_origin,
             ),
         )
 
@@ -507,9 +799,10 @@ class SentryDatabase:
                     analyst_notes,
                     recommended_action,
                     evidence_json,
-                    threat_intel_json
+                    threat_intel_json,
+                    event_origin
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     alert.alert_type,
@@ -524,6 +817,7 @@ class SentryDatabase:
                     None,
                     self._evidence_json(alert),
                     self._threat_intel_json(alert),
+                    alert.event_origin,
                 ),
             )
 
@@ -1200,6 +1494,8 @@ class SentryDatabase:
             "ON alerts(rule_id)",
             "CREATE INDEX IF NOT EXISTS idx_alerts_status "
             "ON alerts(status)",
+            "CREATE INDEX IF NOT EXISTS idx_events_event_origin "
+            "ON events(event_origin)",
         ):
             cursor.execute(statement)
 

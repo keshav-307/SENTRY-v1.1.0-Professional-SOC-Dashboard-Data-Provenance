@@ -132,6 +132,11 @@ class SentryPipeline:
                 self._detect_anomalies(events)
             )
 
+        alerts = self._label_alert_origins(
+            alerts,
+            events,
+        )
+
         alerts = self._enrich_alerts(alerts)
 
         if events:
@@ -148,6 +153,54 @@ class SentryPipeline:
             alerts,
             self.database,
         )
+
+        return alerts
+
+    # ---------------------------------------------------------
+    # DATA ORIGIN PROPAGATION
+    # ---------------------------------------------------------
+
+    @staticmethod
+    def _label_alert_origins(alerts, events):
+        """
+        Carry the origin of the triggering events onto their alerts.
+
+        This is metadata only: detection, severity, confidence and
+        deduplication behaviour are untouched. Mixed origins are marked
+        UNKNOWN rather than guessing.
+        """
+
+        if not alerts:
+            return alerts
+
+        origins_by_ip = {}
+        batch_origins = set()
+
+        for event in events or []:
+            origin = (
+                event.event_origin or "UNKNOWN"
+            )
+
+            batch_origins.add(origin)
+
+            if event.source_ip:
+                origins_by_ip.setdefault(
+                    event.source_ip,
+                    set(),
+                ).add(origin)
+
+        for alert in alerts:
+            origins = (
+                origins_by_ip.get(alert.source_ip)
+                if alert.source_ip
+                else None
+            ) or batch_origins
+
+            alert.event_origin = (
+                next(iter(origins))
+                if len(origins) == 1
+                else "UNKNOWN"
+            )
 
         return alerts
 

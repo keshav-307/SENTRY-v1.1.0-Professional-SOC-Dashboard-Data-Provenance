@@ -1,363 +1,44 @@
-import json
+"""
+SENTRY — Security Monitoring & Threat Detection Platform.
 
-import streamlit as st
+Streamlit dashboard for SENTRY v1.1.0.
+
+Data-origin policy
+------------------
+Events carry an explicit ``event_origin``:
+
+    SYNTHETIC  produced by SENTRY's event generator
+    LIVE       captured from real network traffic
+    UNKNOWN    historical rows whose origin cannot be established
+
+The dashboard never infers an origin from an IP address or event type.
+"""
+
+import html
+import json
+import os
+import sys
 from collections import Counter
+from datetime import datetime, timedelta
+from pathlib import Path
 import threading
 
+import altair as alt
+import pandas as pd
+import streamlit as st
 from scapy.all import conf
 
 from core.database import SentryDatabase
+from core.detector import RULE_METADATA, load_rules_config
 from core.generator import EventGenerator
 from core.pipeline import SentryPipeline
 from sensors.network_sensor import NetworkSensor
 
 
-# =========================================================
-# PAGE CONFIGURATION
-# =========================================================
+SENTRY_VERSION = "1.1.0"
+DATABASE_PATH = os.environ.get("SENTRY_DB_PATH", "sentry.db")
 
-st.set_page_config(
-    page_title="SENTRY — Security Monitoring",
-    page_icon="🛡️",
-    layout="wide",
-)
-
-
-# =========================================================
-# SENTRY UI — PROFESSIONAL SIEM/SOC TYPOGRAPHY
-# =========================================================
-
-st.markdown(
-    """
-    <style>
-
-    /* =====================================================
-       GLOBAL TYPOGRAPHY
-       ===================================================== */
-
-    html,
-    body,
-    [class*="css"] {
-        font-family:
-            "Inter",
-            "Segoe UI",
-            Roboto,
-            Helvetica,
-            Arial,
-            sans-serif;
-    }
-
-    .stApp {
-        font-size: 14px;
-    }
-
-    .stMarkdown,
-    .stMarkdown p,
-    .stMarkdown li {
-        font-size: 14px;
-        line-height: 1.45;
-    }
-
-
-    /* =====================================================
-       MAIN HEADER
-       ===================================================== */
-
-    h1 {
-        font-size: 30px !important;
-        font-weight: 700 !important;
-        letter-spacing: -0.5px;
-        line-height: 1.15 !important;
-        margin-bottom: 4px !important;
-    }
-
-    h2 {
-        font-size: 20px !important;
-        font-weight: 650 !important;
-        letter-spacing: -0.2px;
-        line-height: 1.25 !important;
-        margin-top: 18px !important;
-        margin-bottom: 8px !important;
-    }
-
-    h3 {
-        font-size: 16px !important;
-        font-weight: 600 !important;
-        line-height: 1.3 !important;
-        margin-top: 12px !important;
-        margin-bottom: 6px !important;
-    }
-
-
-    /* =====================================================
-       METRICS
-       ===================================================== */
-
-    [data-testid="stMetric"] {
-        padding: 4px 2px;
-    }
-
-    [data-testid="stMetricLabel"] {
-        font-size: 11px !important;
-        font-weight: 600 !important;
-        letter-spacing: 0.7px;
-        text-transform: uppercase;
-    }
-
-    [data-testid="stMetricValue"] {
-        font-size: 26px !important;
-        font-weight: 700 !important;
-        line-height: 1.1 !important;
-    }
-
-    [data-testid="stMetricDelta"] {
-        font-size: 11px !important;
-    }
-
-
-    /* =====================================================
-       SIDEBAR
-       ===================================================== */
-
-    section[data-testid="stSidebar"] {
-        font-size: 13px;
-    }
-
-    section[data-testid="stSidebar"] h1 {
-        font-size: 20px !important;
-    }
-
-    section[data-testid="stSidebar"] h2 {
-        font-size: 16px !important;
-    }
-
-    section[data-testid="stSidebar"] p,
-    section[data-testid="stSidebar"] label {
-        font-size: 13px !important;
-    }
-
-    section[data-testid="stSidebar"] .stMarkdown {
-        font-size: 13px !important;
-    }
-
-
-    /* =====================================================
-       FORM CONTROLS
-       ===================================================== */
-
-    .stSelectbox label,
-    .stTextInput label,
-    .stTextArea label {
-        font-size: 12px !important;
-        font-weight: 600 !important;
-    }
-
-    .stSelectbox div,
-    .stTextInput input,
-    .stTextArea textarea {
-        font-size: 13px !important;
-    }
-
-
-    /* =====================================================
-       BUTTONS
-       ===================================================== */
-
-    .stButton > button {
-        font-size: 13px !important;
-        font-weight: 600 !important;
-        letter-spacing: 0.15px;
-        min-height: 36px;
-    }
-
-
-    /* =====================================================
-       ALERT / STATUS BOXES
-       ===================================================== */
-
-    [data-testid="stAlert"] {
-        font-size: 13px !important;
-        line-height: 1.4 !important;
-    }
-
-    [data-testid="stAlert"] p {
-        font-size: 13px !important;
-    }
-
-
-    /* =====================================================
-       EXPANDERS
-       ===================================================== */
-
-    [data-testid="stExpander"] summary {
-        font-size: 13px !important;
-        font-weight: 600 !important;
-    }
-
-    [data-testid="stExpander"] .stMarkdown,
-    [data-testid="stExpander"] p {
-        font-size: 13px !important;
-        line-height: 1.4 !important;
-    }
-
-
-    /* =====================================================
-       CODE / LOG DATA
-       ===================================================== */
-
-    code {
-        font-family:
-            "Cascadia Code",
-            "Consolas",
-            "SFMono-Regular",
-            monospace !important;
-
-        font-size: 12px !important;
-    }
-
-    pre {
-        font-family:
-            "Cascadia Code",
-            "Consolas",
-            monospace !important;
-
-        font-size: 12px !important;
-        line-height: 1.45 !important;
-    }
-
-
-    /* =====================================================
-       CAPTIONS
-       ===================================================== */
-
-    .stCaption,
-    [data-testid="stCaptionContainer"] {
-        font-size: 11px !important;
-        line-height: 1.35 !important;
-    }
-
-
-    /* =====================================================
-       QUICK NAVIGATION
-       ===================================================== */
-
-    .sentry-nav {
-        font-size: 12px;
-        line-height: 1.5;
-        font-weight: 500;
-    }
-
-    .sentry-nav a {
-        font-size: 12px;
-        text-decoration: none;
-    }
-
-
-    /* =====================================================
-       DENSE DASHBOARD SPACING
-       ===================================================== */
-
-    [data-testid="stVerticalBlock"] .stMarkdown p {
-        margin-bottom: 4px;
-    }
-
-    [data-testid="stVerticalBlock"] {
-        gap: 0.55rem;
-    }
-
-    hr {
-        margin-top: 10px !important;
-        margin-bottom: 10px !important;
-    }
-
-
-    /* =====================================================
-       FOOTER
-       ===================================================== */
-
-    .sentry-footer {
-        font-size: 11px;
-        opacity: 0.65;
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# =========================================================
-# INITIALIZE SENTRY COMPONENTS
-# =========================================================
-
-if "generator" not in st.session_state:
-    st.session_state.generator = EventGenerator()
-
-if "pipeline" not in st.session_state:
-    st.session_state.pipeline = SentryPipeline()
-
-if "database" not in st.session_state:
-    st.session_state.database = SentryDatabase()
-
-if "network_monitor_thread" not in st.session_state:
-    st.session_state.network_monitor_thread = None
-
-
-generator = st.session_state.generator
-pipeline = st.session_state.pipeline
-database = st.session_state.database
-
-
-# =========================================================
-# HEADER
-# =========================================================
-
-st.title("🛡️ SENTRY")
-
-st.subheader(
-    "Security Monitoring & Threat Detection Platform"
-)
-
-st.write(
-    "Persistent security monitoring powered by "
-    "event generation, detection rules, and SQLite."
-)
-
-
-# =========================================================
-# SIDEBAR — EVENT GENERATOR
-# =========================================================
-
-st.sidebar.title("⚙️ Event Generator")
-
-st.sidebar.caption(
-    "Events created here are SYNTHETIC test data and are "
-    "stored alongside real captured events."
-)
-
-scenario = st.sidebar.selectbox(
-    "Security Scenario",
-    [
-        "Normal Traffic",
-        "SSH Brute Force",
-        "SQL Injection",
-        "Path Traversal",
-        "Mixed Attack Campaign",
-    ],
-)
-
-intensity = st.sidebar.selectbox(
-    "Attack Intensity",
-    [
-        "Low",
-        "Medium",
-        "High",
-        "Critical",
-    ],
-    index=1,
-)
-
-scenario_map = {
+SCENARIOS = {
     "Normal Traffic": "normal",
     "SSH Brute Force": "ssh_brute_force",
     "SQL Injection": "sql_injection",
@@ -365,82 +46,2439 @@ scenario_map = {
     "Mixed Attack Campaign": "mixed",
 }
 
+ORIGIN_OPTIONS = ["All Sources", "Live", "Synthetic", "Unknown"]
+ORIGIN_FILTERS = {
+    "All Sources": "All",
+    "Live": "LIVE",
+    "Synthetic": "SYNTHETIC",
+    "Unknown": "UNKNOWN",
+}
 
-st.sidebar.markdown("---")
+ORIGIN_COLORS = {
+    "LIVE": "#34d399",
+    "SYNTHETIC": "#22d3ee",
+    "UNKNOWN": "#64748b",
+}
+
+SEVERITY_COLORS = {
+    "CRITICAL": "#f87171",
+    "HIGH": "#fb923c",
+    "MEDIUM": "#fbbf24",
+    "LOW": "#34d399",
+}
+
+STATUS_LABELS = {
+    "OPEN": "Open",
+    "INVESTIGATING": "Investigating",
+    "RESOLVED": "Resolved",
+    "FALSE_POSITIVE": "False positive",
+}
+
+NAV_PAGES = [
+    "◈  Security Overview",
+    "▣  Live Network Monitoring",
+    "△  Alerts & Incidents",
+    "◇  Network Activity",
+    "☰  Event Explorer",
+    "⬡  Synthetic Lab",
+    "⊙  Detection Rules",
+    "ⓘ  About SENTRY",
+]
 
 
-if st.sidebar.button(
-    "🚨 GENERATE EVENTS",
-    width="stretch",
-    type="primary",
-):
-    selected_scenario = scenario_map[scenario]
+st.set_page_config(
+    page_title="SENTRY — Security Operations",
+    page_icon="🛡️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
-    events = generator.generate(
-        scenario=selected_scenario,
-        intensity=intensity.lower(),
+
+# =============================================================
+# THEME AND LAYOUT
+# =============================================================
+
+st.markdown(
+    """
+    <style>
+    :root {
+        --bg: #0a111f;
+        --panel: #101b2d;
+        --panel-soft: #0d1626;
+        --border: #1e2c44;
+        --border-soft: #17233a;
+        --text: #e6eefc;
+        --muted: #8ea3c0;
+        --accent: #22d3ee;
+        --green: #34d399;
+        --amber: #fbbf24;
+        --orange: #fb923c;
+        --red: #f87171;
+        --slate: #64748b;
+    }
+
+    html, body, [class*="css"] {
+        font-family: "Inter", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    .stApp {
+        background: var(--bg);
+        color: var(--text);
+    }
+
+    [data-testid="stHeader"] {
+        background: transparent;
+    }
+
+    .block-container {
+        padding-top: 1.6rem;
+        padding-bottom: 2rem;
+        max-width: 1500px;
+    }
+
+    h1, h2, h3, h4 {
+        color: var(--text) !important;
+        letter-spacing: -0.25px;
+    }
+
+    p, li, label, span {
+        color: inherit;
+    }
+
+    /* -----------------------------------------------------
+       SIDEBAR
+       ----------------------------------------------------- */
+
+    section[data-testid="stSidebar"] {
+        background: #0b1424;
+        border-right: 1px solid var(--border);
+    }
+
+    section[data-testid="stSidebar"] > div {
+        padding-top: 1.1rem;
+    }
+
+    .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0 4px 14px 4px;
+        border-bottom: 1px solid var(--border-soft);
+        margin-bottom: 10px;
+    }
+
+    .brand svg {
+        flex: 0 0 38px;
+    }
+
+    .brand-name {
+        font-size: 21px;
+        font-weight: 800;
+        letter-spacing: 2.5px;
+        color: #f2f7ff;
+        line-height: 1.1;
+    }
+
+    .brand-sub {
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 1.5px;
+        color: var(--accent);
+        margin-top: 3px;
+    }
+
+    .nav-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 1.6px;
+        color: #607493;
+        margin: 14px 4px 6px 4px;
+    }
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] {
+        gap: 2px;
+    }
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] > label {
+        padding: 8px 10px;
+        border-radius: 7px;
+        border-left: 2px solid transparent;
+        transition: background 120ms ease, border-color 120ms ease;
+        font-size: 13px;
+        color: #b9c8de;
+        cursor: pointer;
+    }
+
+    section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover {
+        background: #111d31;
+        color: var(--text);
+    }
+
+    section[data-testid="stSidebar"]
+    div[role="radiogroup"] > label:has(input:checked) {
+        background: #122238;
+        border-left-color: var(--accent);
+        color: #f2f7ff;
+        font-weight: 600;
+    }
+
+    section[data-testid="stSidebar"]
+    label[data-testid="stRadioOption"] > div > div > div:first-child {
+        display: none;
+    }
+
+    .sidebar-status {
+        margin: 14px 2px 4px 2px;
+        padding: 10px 12px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel-soft);
+        font-size: 11px;
+        color: var(--muted);
+        line-height: 1.6;
+    }
+
+    .sidebar-status strong {
+        color: var(--text);
+        font-weight: 600;
+    }
+
+    .dot {
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        margin-right: 6px;
+        vertical-align: 1px;
+    }
+
+    .dot-live { background: var(--green); }
+    .dot-idle { background: #475569; }
+    .dot-warn { background: var(--amber); }
+
+    .sidebar-footer {
+        font-size: 10px;
+        color: #5c708f;
+        letter-spacing: 0.3px;
+        margin: 18px 4px 0 4px;
+    }
+
+    /* -----------------------------------------------------
+       PAGE HEADER
+       ----------------------------------------------------- */
+
+    .page-kicker {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 1.8px;
+        color: var(--accent);
+        text-transform: uppercase;
+        margin-bottom: 5px;
+    }
+
+    .page-title {
+        font-size: 27px !important;
+        font-weight: 750 !important;
+        line-height: 1.15 !important;
+        margin: 0 0 5px 0 !important;
+    }
+
+    .page-sub {
+        font-size: 13px;
+        color: var(--muted);
+        max-width: 900px;
+        margin: 0 0 14px 0;
+        line-height: 1.5;
+    }
+
+    .section-title {
+        font-size: 13px;
+        font-weight: 700;
+        letter-spacing: 0.9px;
+        text-transform: uppercase;
+        color: #c9d7ea;
+        margin: 4px 0 8px 0;
+    }
+
+    .section-sub {
+        font-size: 12px;
+        color: var(--muted);
+        margin: -4px 0 10px 0;
+    }
+
+    /* -----------------------------------------------------
+       METRIC CARDS
+       ----------------------------------------------------- */
+
+    .metric-card {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 13px 14px 12px 14px;
+        min-height: 94px;
+    }
+
+    .metric-card.tone-accent { border-top: 2px solid var(--accent); }
+    .metric-card.tone-live { border-top: 2px solid var(--green); }
+    .metric-card.tone-critical { border-top: 2px solid var(--red); }
+    .metric-card.tone-high { border-top: 2px solid var(--orange); }
+    .metric-card.tone-warning { border-top: 2px solid var(--amber); }
+    .metric-card.tone-muted { border-top: 2px solid var(--slate); }
+
+    .metric-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 1.1px;
+        text-transform: uppercase;
+        color: var(--muted);
+    }
+
+    .metric-value {
+        font-size: 26px;
+        font-weight: 750;
+        line-height: 1.15;
+        color: var(--text);
+        margin-top: 7px;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .metric-sub {
+        font-size: 11px;
+        color: var(--muted);
+        margin-top: 4px;
+    }
+
+    /* -----------------------------------------------------
+       PILLS AND BADGES
+       ----------------------------------------------------- */
+
+    .pill {
+        display: inline-block;
+        padding: 3px 9px;
+        border-radius: 999px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.8px;
+        text-transform: uppercase;
+        border: 1px solid transparent;
+    }
+
+    .pill-live {
+        color: #a7f3d0;
+        background: rgba(52, 211, 153, 0.12);
+        border-color: rgba(52, 211, 153, 0.4);
+    }
+
+    .pill-synthetic {
+        color: #a5f3fc;
+        background: rgba(34, 211, 238, 0.10);
+        border-color: rgba(34, 211, 238, 0.38);
+    }
+
+    .pill-unknown {
+        color: #cbd5e1;
+        background: rgba(100, 116, 139, 0.16);
+        border-color: rgba(100, 116, 139, 0.42);
+    }
+
+    .pill-critical {
+        color: #fecaca;
+        background: rgba(248, 113, 113, 0.12);
+        border-color: rgba(248, 113, 113, 0.42);
+    }
+
+    .pill-high {
+        color: #fed7aa;
+        background: rgba(251, 146, 60, 0.12);
+        border-color: rgba(251, 146, 60, 0.4);
+    }
+
+    .pill-medium {
+        color: #fde68a;
+        background: rgba(251, 191, 36, 0.11);
+        border-color: rgba(251, 191, 36, 0.38);
+    }
+
+    .pill-low {
+        color: #bbf7d0;
+        background: rgba(52, 211, 153, 0.10);
+        border-color: rgba(52, 211, 153, 0.35);
+    }
+
+    .pill-open {
+        color: #fecaca;
+        background: rgba(248, 113, 113, 0.10);
+        border-color: rgba(248, 113, 113, 0.32);
+    }
+
+    .pill-investigating {
+        color: #a5f3fc;
+        background: rgba(34, 211, 238, 0.10);
+        border-color: rgba(34, 211, 238, 0.32);
+    }
+
+    .pill-resolved {
+        color: #bbf7d0;
+        background: rgba(52, 211, 153, 0.10);
+        border-color: rgba(52, 211, 153, 0.32);
+    }
+
+    .pill-false_positive {
+        color: #cbd5e1;
+        background: rgba(100, 116, 139, 0.14);
+        border-color: rgba(100, 116, 139, 0.34);
+    }
+
+    .mono {
+        font-family: "Cascadia Code", "Consolas", monospace;
+        font-size: 12px;
+    }
+
+    .muted { color: var(--muted); }
+
+    .banner {
+        padding: 11px 14px;
+        border-radius: 8px;
+        border: 1px solid var(--border);
+        background: var(--panel-soft);
+        font-size: 12px;
+        color: var(--muted);
+        margin: 6px 0 12px 0;
+        line-height: 1.55;
+    }
+
+    .banner strong { color: var(--text); }
+
+    .banner-synthetic {
+        border-color: rgba(34, 211, 238, 0.32);
+        background: rgba(34, 211, 238, 0.055);
+    }
+
+    .banner-live {
+        border-color: rgba(52, 211, 153, 0.30);
+        background: rgba(52, 211, 153, 0.05);
+    }
+
+    /* -----------------------------------------------------
+       STREAMLIT PANELS / CONTROLS
+       ----------------------------------------------------- */
+
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        background: var(--panel-soft);
+        border-color: var(--border) !important;
+        border-radius: 10px;
+    }
+
+    [data-testid="stMetric"] {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 12px;
+    }
+
+    [data-testid="stMetricLabel"] {
+        font-size: 10px !important;
+        font-weight: 700 !important;
+        letter-spacing: 0.9px;
+        text-transform: uppercase;
+        color: var(--muted) !important;
+    }
+
+    [data-testid="stMetricValue"] {
+        font-size: 22px !important;
+        font-weight: 700 !important;
+        color: var(--text);
+    }
+
+    .stButton > button {
+        border-radius: 7px;
+        border: 1px solid var(--border);
+        background: #142136;
+        color: var(--text);
+        font-size: 12px;
+        font-weight: 650;
+        letter-spacing: 0.3px;
+        min-height: 34px;
+    }
+
+    .stButton > button:hover {
+        border-color: var(--accent);
+        color: #ffffff;
+        background: #17283f;
+    }
+
+    .stButton > button[kind="primary"] {
+        background: #0e7490;
+        border-color: #22d3ee;
+        color: #f0fdff;
+    }
+
+    .stButton > button[kind="primary"]:hover {
+        background: #0891b2;
+        border-color: #67e8f9;
+    }
+
+    .stButton > button:disabled {
+        background: #101a2a;
+        color: #607493;
+        border-color: #1b2940;
+    }
+
+    .stSelectbox label,
+    .stTextInput label,
+    .stTextArea label,
+    .stNumberInput label {
+        font-size: 11px !important;
+        font-weight: 650 !important;
+        letter-spacing: 0.3px;
+        color: var(--muted) !important;
+    }
+
+    .stTextInput input,
+    .stTextArea textarea,
+    .stNumberInput input {
+        background: #0d1727 !important;
+        color: var(--text) !important;
+        border-color: var(--border) !important;
+        font-size: 13px !important;
+    }
+
+    [data-testid="stDataFrame"] {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+    }
+
+    .stDataFrame [role="columnheader"] {
+        background: #111d30 !important;
+        color: #aebfd6 !important;
+        font-size: 11px !important;
+        letter-spacing: 0.3px;
+    }
+
+    [data-testid="stExpander"] {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel-soft);
+    }
+
+    [data-testid="stExpander"] summary {
+        font-size: 12px;
+        font-weight: 650;
+    }
+
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 2px;
+        border-bottom: 1px solid var(--border);
+    }
+
+    .stTabs [data-baseweb="tab"] {
+        font-size: 12px;
+        font-weight: 650;
+        color: var(--muted);
+        padding: 7px 14px;
+    }
+
+    .stTabs [aria-selected="true"] {
+        color: var(--accent);
+        border-bottom: 2px solid var(--accent);
+    }
+
+    [data-testid="stAlert"] {
+        font-size: 12px;
+        border-radius: 8px;
+    }
+
+    code, pre {
+        font-family: "Cascadia Code", "Consolas", monospace !important;
+        font-size: 12px !important;
+    }
+
+    [data-testid="stCaptionContainer"] {
+        font-size: 11px !important;
+        color: var(--muted);
+        line-height: 1.45;
+    }
+
+    hr {
+        margin: 14px 0 !important;
+        border-color: var(--border-soft) !important;
+    }
+
+    .footer {
+        margin-top: 30px;
+        padding-top: 12px;
+        border-top: 1px solid var(--border-soft);
+        font-size: 10px;
+        letter-spacing: 0.5px;
+        color: #5c708f;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+    }
+
+    @media (max-width: 900px) {
+        .page-title { font-size: 23px !important; }
+        .metric-value { font-size: 22px; }
+        .block-container { padding-left: 1rem; padding-right: 1rem; }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+# =============================================================
+# SESSION STATE
+# =============================================================
+
+if "database" not in st.session_state:
+    st.session_state.database = SentryDatabase(DATABASE_PATH)
+
+if "pipeline" not in st.session_state:
+    st.session_state.pipeline = SentryPipeline(
+        database_path=DATABASE_PATH
     )
 
-    pipeline.process_events(events)
+if "generator" not in st.session_state:
+    st.session_state.generator = EventGenerator()
 
-    st.rerun()
+if "network_monitor_thread" not in st.session_state:
+    st.session_state.network_monitor_thread = None
+
+if "network_sensor" not in st.session_state:
+    st.session_state.network_sensor = None
+
+database = st.session_state.database
+pipeline = st.session_state.pipeline
+generator = st.session_state.generator
 
 
-# =========================================================
-# SIDEBAR — QUICK NAVIGATION
-# =========================================================
+# =============================================================
+# SMALL HELPERS
+# =============================================================
 
-st.sidebar.markdown("---")
+def esc(value):
+    """Escape a value before inserting it into custom HTML."""
 
-with st.sidebar.expander(
-    "🧭 QUICK NAVIGATION",
-    expanded=True,
-):
+    return html.escape("" if value is None else str(value))
+
+
+def normalise_origin(value):
+    """Return LIVE, SYNTHETIC or UNKNOWN for display and filtering."""
+
+    origin = str(value or "").strip().upper()
+
+    return origin if origin in ("LIVE", "SYNTHETIC") else "UNKNOWN"
+
+
+def origin_badge(value):
+    origin = normalise_origin(value)
+
+    return (
+        f'<span class="pill pill-{origin.lower()}">'
+        f"{origin}</span>"
+    )
+
+
+def severity_badge(value):
+    severity = str(value or "UNKNOWN").upper()
+    css = severity.lower() if severity in SEVERITY_COLORS else "unknown"
+
+    return f'<span class="pill pill-{css}">{esc(severity)}</span>'
+
+
+def status_badge(value):
+    status = str(value or "OPEN").upper()
+    css = status.lower()
+
+    return (
+        f'<span class="pill pill-{css}">'
+        f"{esc(STATUS_LABELS.get(status, status))}</span>"
+    )
+
+
+def metric_card(label, value, sub="", tone="accent"):
     st.markdown(
-        """
-        <div class="sentry-nav">
-
-        <a href="#security-overview">
-        📊 Security Overview
-        </a><br>
-
-        <a href="#live-network-monitoring">
-        🌐 Live Network Monitoring
-        </a><br>
-
-        <a href="#network-activity">
-        🌐 Network Activity
-        </a><br>
-
-        <a href="#recent-security-alerts">
-        🚨 Recent Security Alerts
-        </a><br>
-
-        <a href="#attack-analysis">
-        📈 Attack Analysis
-        </a><br>
-
-        <a href="#recent-event-stream">
-        📡 Event Stream
-        </a>
-
+        f"""
+        <div class="metric-card tone-{esc(tone)}">
+            <div class="metric-label">{esc(label)}</div>
+            <div class="metric-value">{esc(value)}</div>
+            <div class="metric-sub">{esc(sub)}</div>
         </div>
         """,
         unsafe_allow_html=True,
     )
 
 
-# =========================================================
-# NETWORK EVENT METADATA DISPLAY
-# =========================================================
+def page_header(kicker, title, subtitle):
+    st.markdown(
+        f"""
+        <div class="page-kicker">{esc(kicker)}</div>
+        <div class="page-title">{esc(title)}</div>
+        <div class="page-sub">{esc(subtitle)}</div>
+        """,
+        unsafe_allow_html=True,
+    )
 
-def _event_value(event, key, default=None):
-    """
-    Read one column from a sqlite Row or dict without raising when the
-    column is absent. Keeps the dashboard robust for databases that
-    have not been migrated yet.
-    """
 
+def section_title(title, subtitle=None):
+    st.markdown(
+        f'<div class="section-title">{esc(title)}</div>',
+        unsafe_allow_html=True,
+    )
+
+    if subtitle:
+        st.markdown(
+            f'<div class="section-sub">{esc(subtitle)}</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def format_timestamp(value):
+    if not value:
+        return "—"
+
+    text = str(value).replace("T", " ")
+
+    if "." in text:
+        text = text.split(".")[0]
+
+    return text
+
+
+def parse_json(raw):
+    if not raw:
+        return None
+
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+
+    return parsed if isinstance(parsed, dict) else None
+
+
+def confidence_text(value):
+    if isinstance(value, (int, float)):
+        return f"{value:.0%}"
+
+    return "—"
+
+
+def alert_table_rows(alerts):
+    rows = []
+
+    for alert in alerts:
+        rows.append(
+            {
+                "ID": alert["id"],
+                "Time": format_timestamp(alert["timestamp"]),
+                "Severity": str(alert["severity"]).upper(),
+                "Rule": alert["rule_id"],
+                "Detection": alert["alert_type"],
+                "Source IP": alert["source_ip"] or "—",
+                "Confidence": confidence_text(alert["confidence"]),
+                "Status": STATUS_LABELS.get(
+                    alert["status"],
+                    alert["status"],
+                ),
+                "Origin": normalise_origin(
+                    alert["event_origin"]
+                    if "event_origin" in alert.keys()
+                    else None
+                ),
+            }
+        )
+
+    return rows
+
+
+def event_table_rows(events):
+    rows = []
+
+    for event in events:
+        rows.append(
+            {
+                "Time": format_timestamp(event["timestamp"]),
+                "Origin": normalise_origin(
+                    event["event_origin"]
+                    if "event_origin" in event.keys()
+                    else None
+                ),
+                "Event Type": event["event_type"] or "—",
+                "Source": event["source"] or "—",
+                "Source IP": event["source_ip"] or "—",
+                "Destination IP": event["destination_ip"] or "—",
+                "Protocol": event["protocol"] or "—",
+                "Destination Port": (
+                    str(event["destination_port"])
+                    if event["destination_port"] is not None
+                    else "—"
+                ),
+                "User": event["username"] or "—",
+                "Detail": (
+                    event["path"]
+                    or event["method"]
+                    or event["raw"]
+                    or "—"
+                ),
+            }
+        )
+
+    return rows
+
+
+def chart_theme(chart):
+    return (
+        chart.configure_view(stroke=None)
+        .configure_axis(
+            labelColor="#8ea3c0",
+            titleColor="#8ea3c0",
+            gridColor="#1e2c44",
+            domainColor="#1e2c44",
+            tickColor="#1e2c44",
+            labelFontSize=10,
+            titleFontSize=10,
+        )
+        .configure_legend(
+            labelColor="#b9c8de",
+            titleColor="#8ea3c0",
+            labelFontSize=10,
+        )
+    )
+
+
+def origin_bar_chart(rows, height=220):
+    """Horizontal bar chart of counts per origin."""
+
+    data = pd.DataFrame(
+        [
+            {
+                "Origin": row["origin"],
+                "Events": row["count"],
+            }
+            for row in rows
+        ]
+    )
+
+    if data.empty:
+        st.info("No data available yet.")
+        return
+
+    chart = (
+        alt.Chart(data)
+        .mark_bar(cornerRadiusEnd=3)
+        .encode(
+            x=alt.X("Events:Q", title=None),
+            y=alt.Y(
+                "Origin:N",
+                title=None,
+                sort=["LIVE", "SYNTHETIC", "UNKNOWN"],
+            ),
+            color=alt.Color(
+                "Origin:N",
+                scale=alt.Scale(
+                    domain=["LIVE", "SYNTHETIC", "UNKNOWN"],
+                    range=[
+                        ORIGIN_COLORS["LIVE"],
+                        ORIGIN_COLORS["SYNTHETIC"],
+                        ORIGIN_COLORS["UNKNOWN"],
+                    ],
+                ),
+                legend=None,
+            ),
+            tooltip=["Origin:N", "Events:Q"],
+        )
+        .properties(height=height)
+    )
+
+    st.altair_chart(
+        chart_theme(chart),
+        width="stretch",
+    )
+
+
+def simple_bar_chart(
+    dataframe,
+    category,
+    value,
+    color=None,
+    color_scale=None,
+    horizontal=False,
+    height=220,
+    sort=None,
+):
+    if dataframe.empty:
+        st.info("No data available yet.")
+        return
+
+    if horizontal:
+        x = alt.X(f"{value}:Q", title=None)
+        y = alt.Y(
+            f"{category}:N",
+            title=None,
+            sort=sort or "-x",
+        )
+    else:
+        x = alt.X(f"{category}:N", title=None, sort="-y")
+        y = alt.Y(f"{value}:Q", title=None)
+
+    encoding = {
+        "x": x,
+        "y": y,
+        "tooltip": [f"{category}:N", f"{value}:Q"],
+    }
+
+    if color:
+        encoding["color"] = alt.Color(
+            f"{color}:N",
+            scale=(
+                alt.Scale(**color_scale)
+                if color_scale
+                else alt.Undefined
+            ),
+            legend=None,
+        )
+    else:
+        encoding["color"] = alt.value("#22d3ee")
+
+    chart = (
+        alt.Chart(dataframe)
+        .mark_bar(cornerRadiusEnd=3)
+        .encode(**encoding)
+        .properties(height=height)
+    )
+
+    st.altair_chart(
+        chart_theme(chart),
+        width="stretch",
+    )
+
+
+def render_footer():
+    st.markdown(
+        f"""
+        <div class="footer">
+            <span>SENTRY v{esc(SENTRY_VERSION)} · Local-first security operations</span>
+            <span>SQLite · Streamlit · Scapy/Npcap</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# =============================================================
+# NETWORK CAPTURE HELPERS
+# =============================================================
+
+def get_capture_interfaces():
+    """Discover usable Scapy/Npcap interfaces for the dashboard."""
+
+    interfaces = {}
+
+    for iface in conf.ifaces.values():
+        name = getattr(iface, "name", None)
+        description = getattr(iface, "description", None)
+        ip_address = getattr(iface, "ip", None)
+        guid = getattr(iface, "guid", None)
+
+        if not name or not guid:
+            continue
+
+        description_lower = (
+            description.lower() if description else ""
+        )
+
+        if "wan miniport" in description_lower:
+            continue
+
+        if "wi-fi direct" in description_lower:
+            continue
+
+        if name == "Loopback Pseudo-Interface 1":
+            label = "Loopback — 127.0.0.1"
+        elif (
+            ip_address
+            and not str(ip_address).startswith("169.254.")
+        ):
+            label = f"{name} — {ip_address}"
+        else:
+            label = f"{name} — no active IPv4"
+
+        interfaces[label] = iface
+
+    return interfaces
+
+
+def network_monitor_running():
+    thread = st.session_state.get("network_monitor_thread")
+
+    return thread is not None and thread.is_alive()
+
+
+def npcap_available():
+    system_root = os.environ.get("SystemRoot", r"C:\Windows")
+
+    candidates = [
+        Path(system_root) / "System32" / "Npcap" / "wpcap.dll",
+        Path(system_root) / "SysWOW64" / "Npcap" / "wpcap.dll",
+    ]
+
+    if any(path.exists() for path in candidates):
+        return True
+
+    try:
+        import winreg
+
+        for root, path in (
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Npcap"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Npcap"),
+        ):
+            try:
+                winreg.OpenKey(root, path).Close()
+                return True
+            except OSError:
+                continue
+    except ImportError:
+        return False
+
+    return False
+
+
+# =============================================================
+# ALERT DETAIL RENDERING
+# =============================================================
+
+def render_evidence(evidence):
+    if not isinstance(evidence, dict):
+        st.info(
+            "Detection evidence is not available for this historical alert."
+        )
+        return
+
+    mitre = evidence.get("mitre") or {}
+
+    st.markdown(
+        f"**Rule** `{esc(evidence.get('rule_id', '—'))}` · "
+        f"{esc(evidence.get('rule_name', '—'))}"
+    )
+
+    if evidence.get("rule_description"):
+        st.write(evidence["rule_description"])
+
+    if mitre:
+        st.caption(
+            f"MITRE ATT&CK · {mitre.get('technique_id', '—')} "
+            f"{mitre.get('technique', '')} · "
+            f"{mitre.get('tactic', '—')}"
+        )
+
+    if evidence.get("explanation"):
+        st.markdown(
+            f"**Why this matters** — {evidence['explanation']}"
+        )
+
+    conditions = evidence.get("conditions") or []
+
+    if conditions:
+        st.markdown("**Triggering conditions**")
+
+        st.dataframe(
+            [
+                {
+                    "Condition": item.get("condition", "—"),
+                    "Expected": item.get("expected", "—"),
+                    "Observed": item.get("observed", "—"),
+                    "Result": item.get("result", "—"),
+                }
+                for item in conditions
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+
+    window = evidence.get("window") or {}
+
+    if window:
+        st.caption(
+            f"Detection window · {window.get('start', '—')} → "
+            f"{window.get('end', '—')} "
+            f"({window.get('seconds', '—')}s)"
+        )
+
+    threshold = evidence.get("threshold")
+
+    if threshold is not None:
+        st.caption(f"Rule threshold · {threshold}")
+
+    triggering = evidence.get("triggering_events") or []
+
+    if triggering:
+        st.markdown("**Matching events that triggered this alert**")
+
+        st.dataframe(
+            [
+                {
+                    "Time": format_timestamp(
+                        item.get("timestamp")
+                    ),
+                    "Origin": normalise_origin(
+                        item.get("event_origin")
+                    ),
+                    "Source": item.get("source", "—"),
+                    "Event Type": item.get("event_type", "—"),
+                    "Source IP": item.get("source_ip") or "—",
+                    "Destination IP": (
+                        item.get("destination_ip") or "—"
+                    ),
+                    "Destination Port": (
+                        item.get("destination_port")
+                        if item.get("destination_port") is not None
+                        else "—"
+                    ),
+                }
+                for item in triggering
+            ],
+            width="stretch",
+            hide_index=True,
+        )
+
+        total = evidence.get("triggering_event_count")
+
+        if isinstance(total, int) and total > len(triggering):
+            st.caption(
+                f"Showing first {len(triggering)} of "
+                f"{total} matching events."
+            )
+
+    if evidence.get("matched_pattern"):
+        st.caption(
+            f"Matched pattern · `{evidence['matched_pattern']}`"
+        )
+
+    unique_ports = evidence.get("unique_destination_ports") or []
+
+    if unique_ports:
+        st.caption(
+            "Unique destination ports · "
+            + ", ".join(str(port) for port in unique_ports)
+        )
+
+    confidence = evidence.get("confidence") or {}
+    score = confidence.get("score")
+
+    if isinstance(score, (int, float)):
+        st.caption(
+            f"Rule confidence {score:.0%} · "
+            f"{confidence.get('basis', '')}"
+        )
+
+    actions = evidence.get("recommended_actions") or []
+
+    if actions:
+        st.markdown("**Recommended actions**")
+
+        for action in actions:
+            st.markdown(f"- {action}")
+
+
+def render_related_events(alert):
+    related = database.get_related_events(
+        alert["source_ip"],
+        alert["timestamp"],
+        window_seconds=120,
+    )
+
+    if not related:
+        st.info(
+            "No related events were found within the ±120 second "
+            "investigation window."
+        )
+        return
+
+    st.caption(
+        f"{len(related)} events from the same source within "
+        "±120 seconds. This is context, not necessarily evidence."
+    )
+
+    st.dataframe(
+        event_table_rows(related[:200]),
+        width="stretch",
+        hide_index=True,
+        height=320,
+    )
+
+
+def render_alert_investigation(alert):
+    investigation = database.get_investigation(alert["id"])
+
+    existing_notes = ""
+    existing_action = ""
+
+    if investigation:
+        existing_notes = investigation["analyst_notes"] or ""
+        existing_action = (
+            investigation["recommended_action"] or ""
+        )
+
+    notes = st.text_area(
+        "Analyst notes",
+        value=existing_notes,
+        height=140,
+        placeholder=(
+            "Document what you observed and what you checked."
+        ),
+        key=f"notes_{alert['id']}",
+    )
+
+    action = st.text_area(
+        "Recommended action",
+        value=existing_action,
+        height=110,
+        placeholder=(
+            "Describe the recommended response or next step."
+        ),
+        key=f"action_{alert['id']}",
+    )
+
+    if st.button(
+        "Save investigation",
+        key=f"save_investigation_{alert['id']}",
+        width="stretch",
+    ):
+        database.update_investigation(
+            alert["id"],
+            notes,
+            action,
+        )
+        st.success(f"Investigation for alert #{alert['id']} saved.")
+        st.rerun()
+
+    st.markdown("---")
+    st.markdown("**Lifecycle**")
+
+    status_options = [
+        "OPEN",
+        "INVESTIGATING",
+        "RESOLVED",
+        "FALSE_POSITIVE",
+    ]
+
+    current_status = (
+        alert["status"]
+        if alert["status"] in status_options
+        else "OPEN"
+    )
+
+    new_status = st.selectbox(
+        "Alert status",
+        status_options,
+        index=status_options.index(current_status),
+        format_func=lambda value: STATUS_LABELS.get(value, value),
+        key=f"status_{alert['id']}",
+    )
+
+    if st.button(
+        "Update status",
+        key=f"update_status_{alert['id']}",
+        width="stretch",
+    ):
+        if new_status == current_status:
+            st.info(
+                f"Alert #{alert['id']} is already "
+                f"{STATUS_LABELS.get(new_status, new_status)}."
+            )
+        else:
+            database.update_alert_status(
+                alert["id"],
+                new_status,
+            )
+            st.success(
+                f"Alert #{alert['id']} updated to "
+                f"{STATUS_LABELS.get(new_status, new_status)}."
+            )
+            st.rerun()
+
+
+def render_alert_detail(alert):
+    evidence = parse_json(
+        alert["evidence_json"]
+        if "evidence_json" in alert.keys()
+        else None
+    )
+    intel = parse_json(
+        alert["threat_intel_json"]
+        if "threat_intel_json" in alert.keys()
+        else None
+    )
+    origin = normalise_origin(
+        alert["event_origin"]
+        if "event_origin" in alert.keys()
+        else None
+    )
+
+    st.markdown(
+        f"""
+        <div class="metric-card tone-{origin.lower()}"
+             style="min-height:0; margin-bottom:10px;">
+            <div style="display:flex; gap:8px; flex-wrap:wrap;
+                        align-items:center;">
+                {severity_badge(alert['severity'])}
+                {status_badge(alert['status'])}
+                {origin_badge(origin)}
+                <span class="muted mono">
+                    {esc(alert['rule_id'])} · Alert #{esc(alert['id'])}
+                </span>
+            </div>
+            <div style="font-size:18px; font-weight:700; margin-top:9px;">
+                {esc(alert['alert_type'])}
+            </div>
+            <div class="muted" style="font-size:12px; margin-top:4px;">
+                {esc(format_timestamp(alert['timestamp']))} ·
+                source {esc(alert['source_ip'] or '—')} ·
+                confidence {esc(confidence_text(alert['confidence']))}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    overview_tab, evidence_tab, context_tab, notes_tab = st.tabs(
+        ["Overview", "Detection evidence", "Investigation context", "Notes & lifecycle"]
+    )
+
+    with overview_tab:
+        st.markdown("**Detection detail**")
+        st.code(alert["detail"] or "—", language=None)
+
+        st.markdown("**Threat intelligence**")
+
+        if not isinstance(intel, dict):
+            st.caption(
+                "No threat-intelligence enrichment is stored for this alert."
+            )
+        else:
+            intel_col1, intel_col2, intel_col3 = st.columns(3)
+
+            intel_col1.metric(
+                "IP",
+                intel.get("ip") or "—",
+            )
+            intel_col2.metric(
+                "Reputation",
+                str(intel.get("status", "unknown")).upper(),
+            )
+            intel_col3.metric(
+                "Source",
+                intel.get("source") or "—",
+            )
+
+            if intel.get("details"):
+                st.caption(str(intel["details"]))
+
+            st.caption(
+                "Unknown means no configured source has data for this "
+                "address; it is not proof of benign activity."
+            )
+
+        st.markdown("**Event origin**")
+        st.write(
+            f"{origin_badge(origin)} This alert was produced by "
+            f"**{origin}** events."
+        )
+
+        if origin == "SYNTHETIC":
+            st.caption(
+                "Synthetic alerts come from SENTRY's demonstration "
+                "generator and do not represent observed network traffic."
+            )
+        elif origin == "UNKNOWN":
+            st.caption(
+                "This alert predates origin labelling, or its triggering "
+                "events had mixed origins. SENTRY does not guess."
+            )
+
+    with evidence_tab:
+        render_evidence(evidence)
+
+    with context_tab:
+        render_related_events(alert)
+
+    with notes_tab:
+        render_alert_investigation(alert)
+
+
+# =============================================================
+# PAGE: SECURITY OVERVIEW
+# =============================================================
+
+def render_overview():
+    page_header(
+        "Security operations / overview",
+        "Security Overview",
+        "Live posture across detections, incidents and telemetry sources. "
+        "All figures are read directly from the SENTRY database.",
+    )
+
+    running = network_monitor_running()
+
+    total_events = database.get_event_count()
+    total_alerts = database.get_alert_count()
+    critical = database.get_alert_count_by_severity("CRITICAL")
+    high = database.get_alert_count_by_severity("HIGH")
+    open_alerts = database.get_open_alert_count()
+
+    status_html = (
+        f'<span class="pill pill-live">Monitoring running</span>'
+        if running
+        else f'<span class="pill pill-unknown">Monitoring stopped</span>'
+    )
+
+    st.markdown(
+        f"""
+        <div class="banner {'banner-live' if running else ''}">
+            <strong>Collection status</strong> · {status_html}
+            &nbsp; SQLite connected ·
+            <span class="mono">{esc(DATABASE_PATH)}</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    metric_cols = st.columns(6)
+
+    with metric_cols[0]:
+        metric_card(
+            "Total events",
+            f"{total_events:,}",
+            "Stored security events",
+            "accent",
+        )
+
+    with metric_cols[1]:
+        metric_card(
+            "Total alerts",
+            f"{total_alerts:,}",
+            "All detections",
+            "high",
+        )
+
+    with metric_cols[2]:
+        metric_card(
+            "Critical",
+            f"{critical:,}",
+            "Immediate attention",
+            "critical",
+        )
+
+    with metric_cols[3]:
+        metric_card(
+            "High",
+            f"{high:,}",
+            "Priority review",
+            "high",
+        )
+
+    with metric_cols[4]:
+        metric_card(
+            "Open incidents",
+            f"{open_alerts:,}",
+            "Status OPEN",
+            "warning",
+        )
+
+    with metric_cols[5]:
+        metric_card(
+            "Live monitoring",
+            "RUNNING" if running else "STOPPED",
+            "Scapy/Npcap capture",
+            "live" if running else "muted",
+        )
+
+    st.markdown("")
+
+    if total_events == 0 and total_alerts == 0:
+        st.info(
+            "No events or alerts have been stored yet. Start live "
+            "monitoring, or use the Synthetic Lab to demonstrate the "
+            "detection engine with clearly labelled simulated data."
+        )
+        return
+
+    origin_counts = {
+        row["origin"]: row["count"]
+        for row in database.get_event_origin_counts()
+    }
+
+    synthetic_count = origin_counts.get("SYNTHETIC", 0)
+    live_count = origin_counts.get("LIVE", 0)
+    unknown_count = origin_counts.get("UNKNOWN", 0)
+
+    st.markdown(
+        f"""
+        <div class="banner">
+            <strong>Data provenance</strong> ·
+            {origin_badge('LIVE')} {live_count:,} live ·
+            {origin_badge('SYNTHETIC')} {synthetic_count:,} synthetic ·
+            {origin_badge('UNKNOWN')} {unknown_count:,} unknown
+            <div class="muted" style="margin-top:6px;">
+                Synthetic events are generated for demonstration and are
+                never presented as observed network traffic. Historical
+                rows without an explicit origin remain UNKNOWN.
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # ---------------------------------------------------------
+    # EVENT VOLUME
+    # ---------------------------------------------------------
+
+    trend_col, severity_col = st.columns([1.55, 1])
+
+    with trend_col:
+        with st.container(border=True):
+            section_title(
+                "Event volume · last 24 hours",
+                "Hourly event counts split by data origin.",
+            )
+
+            timeline_rows = database.get_event_timeline(24)
+
+            now = datetime.now().replace(
+                minute=0,
+                second=0,
+                microsecond=0,
+            )
+
+            buckets = {}
+
+            for offset in range(23, -1, -1):
+                hour = now - timedelta(hours=offset)
+                buckets[hour.strftime("%Y-%m-%dT%H")] = {
+                    "Hour": hour.strftime("%H:00"),
+                    "LIVE": 0,
+                    "SYNTHETIC": 0,
+                    "UNKNOWN": 0,
+                }
+
+            for row in timeline_rows:
+                bucket = buckets.get(row["hour"])
+
+                if bucket is not None:
+                    bucket[row["origin"]] += row["count"]
+
+            timeline_data = pd.DataFrame(
+                list(buckets.values())
+            )
+
+            if timeline_data[["LIVE", "SYNTHETIC", "UNKNOWN"]].to_numpy().sum() == 0:
+                st.info(
+                    "No events were recorded in the last 24 hours. "
+                    "Start live monitoring or generate a synthetic "
+                    "scenario to populate the timeline."
+                )
+            else:
+                chart = (
+                    alt.Chart(timeline_data)
+                    .mark_line(strokeWidth=2)
+                    .encode(
+                        x=alt.X(
+                            "Hour:N",
+                            title=None,
+                            axis=alt.Axis(labelAngle=0),
+                        ),
+                        y=alt.Y("value:Q", title="Events"),
+                        color=alt.Color(
+                            "origin:N",
+                            title=None,
+                            scale=alt.Scale(
+                                domain=[
+                                    "LIVE",
+                                    "SYNTHETIC",
+                                    "UNKNOWN",
+                                ],
+                                range=[
+                                    ORIGIN_COLORS["LIVE"],
+                                    ORIGIN_COLORS["SYNTHETIC"],
+                                    ORIGIN_COLORS["UNKNOWN"],
+                                ],
+                            ),
+                        ),
+                    )
+                    .transform_fold(
+                        ["LIVE", "SYNTHETIC", "UNKNOWN"],
+                        as_=["origin", "value"],
+                    )
+                    .properties(height=235)
+                )
+
+                st.altair_chart(
+                    chart_theme(chart),
+                    width="stretch",
+                )
+
+    with severity_col:
+        with st.container(border=True):
+            section_title(
+                "Alert severity",
+                "Distribution across stored detections.",
+            )
+
+            severity_rows = [
+                {
+                    "Severity": severity,
+                    "Alerts": database.get_alert_count_by_severity(
+                        severity
+                    ),
+                }
+                for severity in (
+                    "CRITICAL",
+                    "HIGH",
+                    "MEDIUM",
+                    "LOW",
+                )
+            ]
+
+            severity_data = pd.DataFrame(severity_rows)
+
+            simple_bar_chart(
+                severity_data,
+                category="Severity",
+                value="Alerts",
+                color="Severity",
+                color_scale={
+                    "domain": [
+                        "CRITICAL",
+                        "HIGH",
+                        "MEDIUM",
+                        "LOW",
+                    ],
+                    "range": [
+                        SEVERITY_COLORS["CRITICAL"],
+                        SEVERITY_COLORS["HIGH"],
+                        SEVERITY_COLORS["MEDIUM"],
+                        SEVERITY_COLORS["LOW"],
+                    ],
+                },
+                horizontal=True,
+                height=235,
+                sort=["CRITICAL", "HIGH", "MEDIUM", "LOW"],
+            )
+
+    # ---------------------------------------------------------
+    # SOURCE / TARGET / RULE BREAKDOWN
+    # ---------------------------------------------------------
+
+    origin_col, source_col, port_col, rule_col = st.columns(
+        [1, 1, 1, 1.25]
+    )
+
+    with origin_col:
+        with st.container(border=True):
+            section_title("Event sources")
+            origin_bar_chart(
+                database.get_event_origin_counts(),
+                height=210,
+            )
+
+    with source_col:
+        with st.container(border=True):
+            section_title("Top source IPs")
+
+            source_rows = database.get_top_source_ips(8)
+            source_data = pd.DataFrame(
+                [
+                    {
+                        "Source IP": row["source_ip"],
+                        "Events": row["count"],
+                    }
+                    for row in source_rows
+                ]
+            )
+
+            simple_bar_chart(
+                source_data,
+                category="Source IP",
+                value="Events",
+                horizontal=True,
+                height=210,
+            )
+
+    with port_col:
+        with st.container(border=True):
+            section_title("Top destination ports")
+
+            port_rows = database.get_top_destination_ports(8)
+            port_data = pd.DataFrame(
+                [
+                    {
+                        "Port": str(row["destination_port"]),
+                        "Events": row["count"],
+                    }
+                    for row in port_rows
+                ]
+            )
+
+            simple_bar_chart(
+                port_data,
+                category="Port",
+                value="Events",
+                horizontal=True,
+                height=210,
+            )
+
+    with rule_col:
+        with st.container(border=True):
+            section_title("Detection rules")
+
+            rule_rows = database.get_rule_distribution(8)
+            rule_data = pd.DataFrame(
+                [
+                    {
+                        "Rule": row["rule_id"],
+                        "Alerts": row["count"],
+                    }
+                    for row in rule_rows
+                ]
+            )
+
+            simple_bar_chart(
+                rule_data,
+                category="Rule",
+                value="Alerts",
+                horizontal=True,
+                height=210,
+            )
+
+    # ---------------------------------------------------------
+    # RECENT ALERTS
+    # ---------------------------------------------------------
+
+    with st.container(border=True):
+        section_title(
+            "Recent alerts",
+            "Newest detections across all data sources.",
+        )
+
+        recent_alerts = database.get_recent_alerts(8)
+
+        if not recent_alerts:
+            st.info("No alerts have been recorded yet.")
+        else:
+            st.dataframe(
+                alert_table_rows(recent_alerts),
+                width="stretch",
+                hide_index=True,
+            )
+
+            st.caption(
+                "Open Alerts & Incidents for filters, evidence, MITRE "
+                "mapping and investigation notes."
+            )
+
+
+# =============================================================
+# PAGE: LIVE NETWORK MONITORING
+# =============================================================
+
+@st.fragment(run_every=2)
+def render_live_monitoring():
+    page_header(
+        "Collection / network sensor",
+        "Live Network Monitoring",
+        "Capture real packets through Scapy/Npcap. Payloads are never "
+        "stored; captured metadata is converted into LIVE security events.",
+    )
+
+    running = network_monitor_running()
+
+    status_pill = (
+        '<span class="pill pill-live">RUNNING</span>'
+        if running
+        else '<span class="pill pill-unknown">STOPPED</span>'
+    )
+
+    st.markdown(
+        f"""
+        <div class="banner {'banner-live' if running else ''}">
+            <strong>Sensor state</strong> · {status_pill}
+            &nbsp; Events produced here are labelled
+            {origin_badge('LIVE')}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    interfaces = get_capture_interfaces()
+
+    if not interfaces:
+        st.error(
+            "No usable network capture interfaces were detected. "
+            "Check that Npcap is installed and that an adapter is enabled."
+        )
+        return
+
+    labels = list(interfaces.keys())
+
+    if (
+        st.session_state.get("selected_network_interface")
+        not in labels
+    ):
+        st.session_state.selected_network_interface = labels[0]
+
+    control_col, duration_col, packet_col, event_col, alert_col = st.columns(
+        [2.4, 1.3, 1, 1, 1]
+    )
+
+    with control_col:
+        selected_label = st.selectbox(
+            "Network interface",
+            labels,
+            index=labels.index(
+                st.session_state.selected_network_interface
+            ),
+            disabled=running,
+            key="network_interface_selector",
+        )
+
+    st.session_state.selected_network_interface = selected_label
+
+    selected_interface = interfaces[selected_label]
+
+    interface_description = getattr(
+        selected_interface,
+        "description",
+        None,
+    )
+    interface_ip = getattr(selected_interface, "ip", None)
+
+    st.caption(
+        f"Adapter · {interface_description or 'Unknown'}   |   "
+        f"IP · {interface_ip or 'No IP assigned'}"
+    )
+
+    if (
+        st.session_state.network_sensor is None
+        or (
+            not running
+            and st.session_state.get(
+                "network_sensor_interface_label"
+            )
+            != selected_label
+        )
+    ):
+        st.session_state.network_sensor = NetworkSensor(
+            pipeline=st.session_state.pipeline,
+            interface=selected_interface,
+        )
+        st.session_state.network_sensor_interface_label = (
+            selected_label
+        )
+
+    sensor = st.session_state.network_sensor
+
+    duration_options = {
+        "10 seconds": 10,
+        "30 seconds": 30,
+        "1 minute": 60,
+        "5 minutes": 300,
+        "10 minutes": 600,
+        "Continuous": None,
+    }
+
+    with duration_col:
+        selected_duration = st.selectbox(
+            "Capture duration",
+            list(duration_options.keys()),
+            disabled=running,
+            key="capture_duration",
+        )
+
+    with packet_col:
+        metric_card(
+            "Packets",
+            f"{sensor.packet_count:,}",
+            "Captured",
+            "accent",
+        )
+
+    with event_col:
+        metric_card(
+            "Events",
+            f"{sensor.event_count:,}",
+            "LIVE events",
+            "live",
+        )
+
+    with alert_col:
+        metric_card(
+            "Alerts",
+            f"{sensor.alert_count:,}",
+            "From capture",
+            "high",
+        )
+
+    start_col, stop_col, spacer = st.columns([1, 1, 3])
+
+    with start_col:
+        start = st.button(
+            "Start monitoring",
+            type="primary",
+            width="stretch",
+            disabled=running,
+            key="start_network_monitor",
+        )
+
+    with stop_col:
+        stop = st.button(
+            "Stop monitoring",
+            width="stretch",
+            disabled=not running,
+            key="stop_network_monitor",
+        )
+
+    if start:
+        duration = duration_options[selected_duration]
+
+        monitor_thread = threading.Thread(
+            target=sensor.start,
+            kwargs={"duration": duration},
+            daemon=True,
+            name="sentry-network-monitor",
+        )
+
+        st.session_state.network_monitor_thread = monitor_thread
+        monitor_thread.start()
+        st.rerun()
+
+    if stop:
+        sensor.stop()
+        st.rerun()
+
+    running = network_monitor_running()
+
+    if running:
+        st.success(
+            "Live capture is running. Real packets are being converted "
+            "into LIVE events and processed by the detection engine."
+        )
+    else:
+        st.info(
+            "Capture is stopped. Select an interface and duration, then "
+            "press Start monitoring."
+        )
+
+    if sensor.last_error:
+        st.error(f"Capture error · {sensor.last_error}")
+
+    recent_live = database.get_recent_network_events(limit=500)
+
+    if recent_live:
+        protocol_counts = Counter(
+            event["protocol"]
+            for event in recent_live
+            if event["protocol"]
+        )
+
+        chart_col, table_col = st.columns([1, 1.7])
+
+        with chart_col:
+            with st.container(border=True):
+                section_title(
+                    "Protocol distribution",
+                    "Last 500 captured network events.",
+                )
+
+                protocol_data = pd.DataFrame(
+                    [
+                        {"Protocol": protocol, "Events": count}
+                        for protocol, count
+                        in protocol_counts.most_common()
+                    ]
+                )
+
+                simple_bar_chart(
+                    protocol_data,
+                    category="Protocol",
+                    value="Events",
+                    horizontal=True,
+                    height=230,
+                )
+
+        with table_col:
+            with st.container(border=True):
+                section_title(
+                    "Recent network events",
+                    "Captured metadata; historical rows may show UNKNOWN.",
+                )
+
+                st.dataframe(
+                    event_table_rows(recent_live[:10]),
+                    width="stretch",
+                    hide_index=True,
+                    height=230,
+                )
+    else:
+        st.info(
+            "No live network events have been captured yet. Start "
+            "monitoring to collect real traffic metadata."
+        )
+
+
+# =============================================================
+# PAGE: ALERTS & INCIDENTS
+# =============================================================
+
+def render_alerts():
+    page_header(
+        "Triage / detections",
+        "Alerts & Incidents",
+        "Filter, inspect and investigate every detection. Evidence, "
+        "MITRE mapping, related events and analyst notes are preserved.",
+    )
+
+    alerts = database.get_recent_alerts(limit=500)
+
+    if not alerts:
+        st.info(
+            "No alerts have been recorded yet. Generate a synthetic "
+            "scenario in the Synthetic Lab, or start live monitoring."
+        )
+        return
+
+    severity_filter = st.columns([1, 1, 1.4, 1, 1.6])
+
+    with severity_filter[0]:
+        severity = st.selectbox(
+            "Severity",
+            ["All", "CRITICAL", "HIGH", "MEDIUM", "LOW"],
+            key="alert_severity_filter",
+        )
+
+    with severity_filter[1]:
+        status = st.selectbox(
+            "Status",
+            ["All"] + list(STATUS_LABELS.keys()),
+            format_func=lambda value: (
+                value
+                if value == "All"
+                else STATUS_LABELS.get(value, value)
+            ),
+            key="alert_status_filter",
+        )
+
+    with severity_filter[2]:
+        rules = sorted(
+            {
+                alert["rule_id"]
+                for alert in alerts
+                if alert["rule_id"]
+            }
+        )
+
+        rule = st.selectbox(
+            "Detection rule",
+            ["All"] + rules,
+            key="alert_rule_filter",
+        )
+
+    with severity_filter[3]:
+        origin_label = st.selectbox(
+            "Event origin",
+            ORIGIN_OPTIONS,
+            key="alert_origin_filter",
+        )
+
+    with severity_filter[4]:
+        search = st.text_input(
+            "Search",
+            placeholder="Source IP, rule, type or detail",
+            key="alert_search",
+        ).strip().lower()
+
+    origin_filter = ORIGIN_FILTERS[origin_label]
+
+    filtered = []
+
+    for alert in alerts:
+        origin = normalise_origin(
+            alert["event_origin"]
+            if "event_origin" in alert.keys()
+            else None
+        )
+
+        if severity != "All" and alert["severity"] != severity:
+            continue
+
+        if status != "All" and alert["status"] != status:
+            continue
+
+        if rule != "All" and alert["rule_id"] != rule:
+            continue
+
+        if origin_filter != "All" and origin != origin_filter:
+            continue
+
+        if search:
+            haystack = " ".join(
+                str(
+                    alert[field] or ""
+                )
+                for field in (
+                    "source_ip",
+                    "rule_id",
+                    "alert_type",
+                    "detail",
+                )
+            ).lower()
+
+            if search not in haystack:
+                continue
+
+        filtered.append(alert)
+
+    st.caption(
+        f"Showing {len(filtered)} of {len(alerts)} recent alerts. "
+        "Filters combine with AND."
+    )
+
+    if not filtered:
+        st.info("No alerts match the selected filters.")
+        return
+
+    with st.container(border=True):
+        st.dataframe(
+            alert_table_rows(filtered),
+            width="stretch",
+            hide_index=True,
+            height=min(330, 40 + len(filtered) * 35),
+        )
+
+    options = {
+        (
+            f"#{alert['id']} · {alert['severity']} · "
+            f"{alert['alert_type']} · "
+            f"{STATUS_LABELS.get(alert['status'], alert['status'])} · "
+            f"{normalise_origin(alert['event_origin'] if 'event_origin' in alert.keys() else None)}"
+        ): alert
+        for alert in filtered
+    }
+
+    selected_label = st.selectbox(
+        "Select an alert to investigate",
+        list(options.keys()),
+        key="selected_alert",
+    )
+
+    render_alert_detail(options[selected_label])
+
+
+# =============================================================
+# PAGE: NETWORK ACTIVITY
+# =============================================================
+
+def render_network_activity():
+    page_header(
+        "Telemetry / network",
+        "Network Activity",
+        "Observed traffic metadata, communicating hosts, flows and "
+        "capture direction. Synthetic events never appear as live packets.",
+    )
+
+    events = database.get_recent_network_events(limit=500)
+
+    if not events:
+        st.info(
+            "No network events have been captured yet. Open Live Network "
+            "Monitoring and start a capture."
+        )
+        return
+
+    source_counts = Counter(
+        event["source_ip"]
+        for event in events
+        if event["source_ip"]
+    )
+    destination_counts = Counter(
+        event["destination_ip"]
+        for event in events
+        if event["destination_ip"]
+    )
+    protocol_counts = Counter(
+        event["protocol"]
+        for event in events
+        if event["protocol"]
+    )
+    port_counts = Counter(
+        event["destination_port"]
+        for event in events
+        if event["destination_port"] is not None
+    )
+
+    flow_keys = {
+        (
+            event["source_ip"],
+            event["destination_ip"],
+            event["protocol"],
+            event["destination_port"],
+        )
+        for event in events
+    }
+
+    metric_cols = st.columns(4)
+
+    with metric_cols[0]:
+        metric_card(
+            "Network events",
+            f"{len(events):,}",
+            "Last 500 captured",
+            "accent",
+        )
+
+    with metric_cols[1]:
+        metric_card(
+            "Unique flows",
+            f"{len(flow_keys):,}",
+            "Source/destination/protocol",
+            "live",
+        )
+
+    with metric_cols[2]:
+        metric_card(
+            "Source hosts",
+            f"{len(source_counts):,}",
+            "Distinct source IPs",
+            "accent",
+        )
+
+    with metric_cols[3]:
+        metric_card(
+            "Destination ports",
+            f"{len(port_counts):,}",
+            "Distinct ports",
+            "muted",
+        )
+
+    iface_col1, iface_col2 = st.columns(2)
+
+    with iface_col1:
+        with st.container(border=True):
+            section_title(
+                "Top source hosts",
+                "Most active source addresses.",
+            )
+
+            simple_bar_chart(
+                pd.DataFrame(
+                    [
+                        {"Host": host, "Events": count}
+                        for host, count in source_counts.most_common(10)
+                    ]
+                ),
+                category="Host",
+                value="Events",
+                horizontal=True,
+                height=230,
+            )
+
+    with iface_col2:
+        with st.container(border=True):
+            section_title(
+                "Top destination ports",
+                "Service ports seen in captured traffic.",
+            )
+
+            simple_bar_chart(
+                pd.DataFrame(
+                    [
+                        {
+                            "Port": str(port),
+                            "Events": count,
+                        }
+                        for port, count in port_counts.most_common(10)
+                    ]
+                ),
+                category="Port",
+                value="Events",
+                horizontal=True,
+                height=230,
+            )
+
+    # ---------------------------------------------------------
+    # FILTERS
+    # ---------------------------------------------------------
+
+    with st.container(border=True):
+        section_title(
+            "Recent network events",
+            "Bounded to the most recent 500 captured packets.",
+        )
+
+        (
+            filter_direction,
+            filter_initiation,
+            filter_protocol,
+            filter_origin,
+            filter_limit,
+        ) = st.columns(5)
+
+        direction = filter_direction.selectbox(
+            "Direction",
+            ["All", "Inbound", "Outbound", "Local", "Unknown"],
+            key="network_direction_filter",
+        )
+
+        initiation = filter_initiation.selectbox(
+            "Connection initiated",
+            ["All", "Initiated", "Not Initiated", "Unknown"],
+            key="network_initiation_filter",
+        )
+
+        protocol = filter_protocol.selectbox(
+            "Protocol",
+            ["All", "TCP", "UDP", "IP"],
+            key="network_protocol_filter",
+        )
+
+        origin_label = filter_origin.selectbox(
+            "Origin",
+            ORIGIN_OPTIONS,
+            key="network_origin_filter",
+        )
+
+        limit = filter_limit.selectbox(
+            "Events shown",
+            [15, 50, 100, 250, 500],
+            key="network_event_limit",
+        )
+
+        filtered = [
+            event
+            for event in events
+            if network_event_matches_filters(
+                event,
+                direction,
+                initiation,
+                protocol,
+                ORIGIN_FILTERS[origin_label],
+            )
+        ]
+
+        st.caption(
+            f"Showing {min(len(filtered), limit)} of "
+            f"{len(filtered)} matching events."
+        )
+
+        if not filtered:
+            st.info("No events match the selected filters.")
+        else:
+            rows = []
+
+            for event in filtered[:limit]:
+                rows.append(
+                    {
+                        "Time": format_timestamp(
+                            event["timestamp"]
+                        ),
+                        "Origin": normalise_origin(
+                            event["event_origin"]
+                            if "event_origin" in event.keys()
+                            else None
+                        ),
+                        "Direction": describe_direction(event),
+                        "Initiated": describe_initiation(event),
+                        "Source IP": event["source_ip"] or "—",
+                        "Source Port": (
+                            str(event["source_port"])
+                            if event["source_port"] is not None
+                            else "—"
+                        ),
+                        "Destination IP": (
+                            event["destination_ip"] or "—"
+                        ),
+                        "Destination Port": (
+                            str(event["destination_port"])
+                            if event["destination_port"] is not None
+                            else "—"
+                        ),
+                        "Protocol": event["protocol"] or "—",
+                        "Event Type": event["event_type"] or "—",
+                    }
+                )
+
+            st.dataframe(
+                rows,
+                width="stretch",
+                hide_index=True,
+                height=360,
+            )
+
+    # ---------------------------------------------------------
+    # FLOW SUMMARY
+    # ---------------------------------------------------------
+
+    flows = {}
+
+    for event in events:
+        key = (
+            event["source_ip"] or "—",
+            event["destination_ip"] or "—",
+            event["protocol"] or "—",
+            event["destination_port"],
+        )
+
+        flow = flows.setdefault(
+            key,
+            {
+                "Source IP": key[0],
+                "Destination IP": key[1],
+                "Protocol": key[2],
+                "Destination Port": (
+                    str(key[3]) if key[3] is not None else "—"
+                ),
+                "Event Count": 0,
+                "First Seen": event["timestamp"],
+                "Last Seen": event["timestamp"],
+            },
+        )
+
+        flow["Event Count"] += 1
+
+        timestamp = event["timestamp"]
+
+        if timestamp:
+            if not flow["First Seen"] or timestamp < flow["First Seen"]:
+                flow["First Seen"] = timestamp
+            if not flow["Last Seen"] or timestamp > flow["Last Seen"]:
+                flow["Last Seen"] = timestamp
+
+    with st.container(border=True):
+        section_title(
+            "Flow summary",
+            "Aggregated conversations from captured metadata.",
+        )
+
+        flow_rows = sorted(
+            flows.values(),
+            key=lambda row: row["Event Count"],
+            reverse=True,
+        )[:15]
+
+        for row in flow_rows:
+            row["First Seen"] = format_timestamp(row["First Seen"])
+            row["Last Seen"] = format_timestamp(row["Last Seen"])
+
+        st.dataframe(
+            flow_rows,
+            width="stretch",
+            hide_index=True,
+        )
+
+
+def event_value(event, key, default=None):
     try:
         keys = event.keys()
     except (AttributeError, TypeError):
@@ -452,2892 +2490,610 @@ def _event_value(event, key, default=None):
     return event[key]
 
 
-def _port_display(port):
-    """Render a port number, or an em dash when there is no port."""
-
-    if port is None:
-        return "—"
-
-    return str(port)
-
-
-def describe_event_direction(event):
-    """
-    Return a readable direction label for a captured network event.
-
-    The value comes from capture-time metadata, never from guessing
-    based on port numbers. Historical events without metadata are
-    shown as Unknown.
-    """
-
-    direction = _event_value(event, "direction")
+def describe_direction(event):
+    direction = event_value(event, "direction")
 
     labels = {
-        "inbound": "⬅️ Inbound",
-        "outbound": "➡️ Outbound",
-        "local": "🔁 Local",
-        "unknown": "❔ Unknown",
-    }
-
-    if direction is None:
-        return "❔ Unknown"
-
-    return labels.get(
-        str(direction).strip().lower(),
-        "❔ Unknown",
-    )
-
-
-def describe_connection_initiation(event):
-    """
-    Return whether this packet begins a connection.
-
-    Yes  = TCP SYN without ACK, or the first packet of a UDP flow.
-    No   = a reply or a mid-stream packet.
-    Unknown = historical events without metadata, and protocols such
-              as ICMP that have no connection initiation.
-    """
-
-    initiated = _event_value(event, "initiated")
-
-    if initiated is None:
-        return "❔ Unknown"
-
-    try:
-        return "✅ Yes" if int(initiated) == 1 else "❌ No"
-    except (TypeError, ValueError):
-        return "❔ Unknown"
-
-
-def normalise_direction_filter(event):
-    """
-    Map stored direction metadata to a filter bucket.
-
-    NULL and unrecognised values are treated as Unknown so historical
-    events can always be found with the Unknown filter.
-    """
-
-    direction = _event_value(event, "direction")
-
-    if direction is None:
-        return "Unknown"
-
-    return {
         "inbound": "Inbound",
         "outbound": "Outbound",
         "local": "Local",
         "unknown": "Unknown",
-    }.get(
+    }
+
+    if direction is None:
+        return "Unknown"
+
+    return labels.get(
         str(direction).strip().lower(),
         "Unknown",
     )
 
 
-def normalise_initiation_filter(event):
-    """
-    Map stored initiation metadata to a filter bucket.
-
-    NULL means the metadata was never captured, so it is Unknown
-    rather than being guessed from port numbers.
-    """
-
-    initiated = _event_value(event, "initiated")
+def describe_initiation(event):
+    initiated = event_value(event, "initiated")
 
     if initiated is None:
         return "Unknown"
 
     try:
-        return (
-            "Initiated"
-            if int(initiated) == 1
-            else "Not Initiated"
-        )
+        return "Yes" if int(initiated) == 1 else "No"
     except (TypeError, ValueError):
         return "Unknown"
 
 
 def network_event_matches_filters(
     event,
-    direction_filter,
-    initiation_filter,
-    protocol_filter,
+    direction,
+    initiation,
+    protocol,
+    origin,
 ):
-    """
-    Return True when an event satisfies every selected filter.
-
-    Filters combine with AND: an event must match direction,
-    initiation and protocol before it is displayed.
-    """
-
     if (
-        direction_filter != "All"
-        and normalise_direction_filter(event)
-        != direction_filter
+        direction != "All"
+        and describe_direction(event) != direction
     ):
         return False
 
     if (
-        initiation_filter != "All"
-        and normalise_initiation_filter(event)
-        != initiation_filter
+        initiation != "All"
+        and describe_initiation(event) != initiation
     ):
         return False
 
-    if protocol_filter != "All":
+    if protocol != "All":
+        if str(event_value(event, "protocol") or "").upper() != protocol:
+            return False
 
-        protocol = (
-            _event_value(event, "protocol") or ""
+    if origin != "All":
+        event_origin = normalise_origin(
+            event_value(event, "event_origin")
         )
 
-        if str(protocol).strip().upper() != protocol_filter:
+        if event_origin != origin:
             return False
 
     return True
 
 
-# =========================================================
-# NETWORK INTERFACE DISCOVERY
-# =========================================================
+# =============================================================
+# PAGE: EVENT EXPLORER
+# =============================================================
 
-def get_capture_interfaces():
-    """
-    Discover usable Scapy/Npcap network interfaces.
+def render_event_explorer():
+    page_header(
+        "Telemetry / events",
+        "Event Explorer",
+        "Search the raw event store with server-side filtering and "
+        "pagination. Large tables are never loaded in full.",
+    )
 
-    Returns:
-        Dictionary mapping a user-friendly dashboard label
-        to the corresponding Scapy interface object.
-    """
+    filter_cols = st.columns([1, 2, 1, 1])
 
-    interfaces = {}
-
-    for iface in conf.ifaces.values():
-
-        name = getattr(
-            iface,
-            "name",
-            None,
+    with filter_cols[0]:
+        origin_label = st.selectbox(
+            "Origin",
+            ORIGIN_OPTIONS,
+            key="explorer_origin_filter",
         )
 
-        description = getattr(
-            iface,
-            "description",
-            None,
+    with filter_cols[1]:
+        search = st.text_input(
+            "Search events",
+            placeholder="IP, event type, user, path or source",
+            key="explorer_search",
+        ).strip()
+
+    with filter_cols[2]:
+        page_size = st.selectbox(
+            "Rows per page",
+            [25, 50, 100, 250],
+            index=1,
+            key="explorer_page_size",
         )
 
-        ip_address = getattr(
-            iface,
-            "ip",
-            None,
+    with filter_cols[3]:
+        page = st.number_input(
+            "Page",
+            min_value=1,
+            value=1,
+            step=1,
+            key="explorer_page",
         )
 
-        guid = getattr(
-            iface,
-            "guid",
-            None,
-        )
+    origin = ORIGIN_FILTERS[origin_label]
 
-        if not name or not guid:
-            continue
+    total = database.count_events(origin, search)
+    max_page = max(1, (total + page_size - 1) // page_size)
 
-        description_lower = (
-            description.lower()
-            if description
-            else ""
-        )
+    page = min(int(page), max_page)
+    offset = (page - 1) * page_size
 
-        # Skip Windows WAN Miniport interfaces.
-        if "wan miniport" in description_lower:
-            continue
-
-        # Skip Microsoft Wi-Fi Direct virtual adapters.
-        if "wi-fi direct" in description_lower:
-            continue
-
-        # =====================================================
-        # FRIENDLY DASHBOARD LABEL
-        #
-        # Green  = active IPv4 address
-        # Blue   = loopback
-        # White  = no active IPv4 / APIPA address
-        # =====================================================
-
-        if name == "Loopback Pseudo-Interface 1":
-
-            label = "🔵 Loopback — 127.0.0.1"
-
-        elif (
-            ip_address
-            and not str(ip_address).startswith("169.254.")
-        ):
-
-            label = f"🟢 {name} — {ip_address}"
-
-        else:
-
-            label = f"⚪ {name} — No active IPv4"
-
-        interfaces[label] = iface
-
-    return interfaces
-
-
-# =========================================================
-# NETWORK MONITOR STATE
-# =========================================================
-
-def _network_monitor_running():
-
-    thread = (
-        st.session_state.network_monitor_thread
-    )
-
-    return (
-        thread is not None
-        and thread.is_alive()
-    )
-
-
-duration_options = {
-    "10 seconds": 10,
-    "30 seconds": 30,
-    "1 minute": 60,
-    "5 minutes": 300,
-    "10 minutes": 600,
-    "Continuous": None,
-}
-
-
-# =========================================================
-# MAIN DASHBOARD
-#
-# Refreshes automatically every second so live network
-# statistics and database-backed metrics stay current.
-# =========================================================
-
-@st.fragment(run_every=1)
-def dashboard():
-
-    # =====================================================
-    # LIVE NETWORK MONITORING
-    # =====================================================
-
-    st.markdown(
-        '<div id="live-network-monitoring"></div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        "## 🌐 LIVE NETWORK MONITORING"
-    )
-
-    st.write(
-        "Monitor real network traffic through SENTRY using "
-        "Scapy/Npcap. Captured packet metadata is converted "
-        "into security events and sent directly to the "
-        "detection pipeline."
-    )
-
-    monitoring_running = _network_monitor_running()
-
-    # =====================================================
-    # NETWORK INTERFACE SELECTION
-    # =====================================================
-
-    capture_interfaces = get_capture_interfaces()
-
-    if not capture_interfaces:
-
-        st.error(
-            "No usable network capture interfaces were detected."
-        )
-
-        st.stop()
-
-    interface_labels = list(
-        capture_interfaces.keys()
-    )
-
-    if (
-        "selected_network_interface"
-        not in st.session_state
-        or
-        st.session_state.selected_network_interface
-        not in interface_labels
-    ):
-
-        st.session_state.selected_network_interface = (
-            interface_labels[0]
-        )
-
-    selected_interface_label = st.selectbox(
-        "Network Interface",
-        interface_labels,
-        index=interface_labels.index(
-            st.session_state.selected_network_interface
-        ),
-        disabled=monitoring_running,
-        key="network_interface_selector",
-    )
-
-    selected_interface = capture_interfaces[
-        selected_interface_label
-    ]
-
-    st.session_state.selected_network_interface = (
-        selected_interface_label
-    )
-
-    interface_ip = getattr(
-        selected_interface,
-        "ip",
-        None,
-    )
-
-    interface_description = getattr(
-        selected_interface,
-        "description",
-        None,
+    rows = database.get_events_page(
+        origin=origin,
+        search=search,
+        limit=page_size,
+        offset=offset,
     )
 
     st.caption(
-        f"Adapter: "
-        f"{interface_description or 'Unknown'}"
-        f"  •  IP: "
-        f"{interface_ip or 'No IP assigned'}"
+        f"{total:,} events match · page {page} of {max_page} · "
+        f"showing {len(rows)} rows"
     )
 
-    # =====================================================
-    # CREATE SENSOR FOR SELECTED INTERFACE
-    # =====================================================
-
-    if (
-        "network_sensor" not in st.session_state
-        or st.session_state.network_sensor is None
-        or (
-            not monitoring_running
-            and st.session_state.get(
-                "network_sensor_interface_label"
-            ) != selected_interface_label
-        )
-    ):
-
-        st.session_state.network_sensor = NetworkSensor(
-            pipeline=st.session_state.pipeline,
-            interface=selected_interface,
-        )
-
-        st.session_state.network_sensor_interface_label = (
-            selected_interface_label
-        )
-
-    network_sensor = (
-        st.session_state.network_sensor
-    )
-
-    # =====================================================
-    # MONITORING METRICS
-    # =====================================================
-
-    monitor_col1, monitor_col2, monitor_col3 = st.columns(
-        [1.4, 1, 1]
-    )
-
-    with monitor_col1:
-
-        selected_duration = st.selectbox(
-            "Capture Duration",
-            list(duration_options.keys()),
-            disabled=monitoring_running,
-            key="capture_duration",
-        )
-
-    with monitor_col2:
-
-        st.metric(
-            "PACKETS CAPTURED",
-            network_sensor.packet_count,
-        )
-
-    with monitor_col3:
-
-        st.metric(
-            "NETWORK EVENTS",
-            network_sensor.event_count,
-        )
-
-    # =====================================================
-    # START / STOP CONTROLS
-    # =====================================================
-
-    button_col1, button_col2 = st.columns(2)
-
-    with button_col1:
-
-        start_monitoring = st.button(
-            "▶️ START MONITORING",
-            width="stretch",
-            type="primary",
-            disabled=monitoring_running,
-            key="start_network_monitor",
-        )
-
-    with button_col2:
-
-        stop_monitoring = st.button(
-            "⏹️ STOP MONITORING",
-            width="stretch",
-            disabled=not monitoring_running,
-            key="stop_network_monitor",
-        )
-
-    # =====================================================
-    # START MONITORING
-    # =====================================================
-
-    if start_monitoring:
-
-        duration = duration_options[
-            selected_duration
-        ]
-
-        monitor_thread = threading.Thread(
-            target=network_sensor.start,
-            kwargs={
-                "duration": duration
-            },
-            daemon=True,
-            name="sentry-network-monitor",
-        )
-
-        st.session_state.network_monitor_thread = (
-            monitor_thread
-        )
-
-        monitor_thread.start()
-
-        st.rerun(scope="fragment")
-
-    # =====================================================
-    # STOP MONITORING
-    # =====================================================
-
-    if stop_monitoring:
-
-        network_sensor.stop()
-
-        st.rerun(scope="fragment")
-
-    # =====================================================
-    # MONITORING STATUS
-    # =====================================================
-
-    monitoring_running = _network_monitor_running()
-
-    if monitoring_running:
-
-        st.success(
-            "🟢 Live network monitoring is running. "
-            "Real packets are being processed by SENTRY."
-        )
-
-    else:
-
+    if not rows:
         st.info(
-            "⚪ Live network monitoring is stopped. "
-            "Select a duration and press START MONITORING."
+            "No events match the selected origin and search. Historical "
+            "events without a recorded origin appear under Unknown."
         )
+        return
 
-    if network_sensor.last_error:
-
-        st.error(
-            f"Capture error: {network_sensor.last_error}"
-        )
-
-    live_col1, live_col2 = st.columns(2)
-
-    with live_col1:
-
-        st.metric(
-            "NETWORK ALERTS",
-            network_sensor.alert_count,
-        )
-
-    with live_col2:
-
-        st.metric(
-            "MONITORING STATUS",
-            "RUNNING"
-            if monitoring_running
-            else "STOPPED",
-        )
-
-    # =====================================================
-    # DATABASE STATISTICS
-    # =====================================================
-
-    total_events = database.get_event_count()
-
-    total_alerts = database.get_alert_count()
-
-    open_alerts = (
-        database.get_open_alert_count()
-    )
-
-    investigating_alerts = (
-        database.get_investigating_alert_count()
-    )
-
-    resolved_alerts = (
-        database.get_resolved_alert_count()
-    )
-
-    false_positive_alerts = (
-        database.get_false_positive_alert_count()
-    )
-
-    critical_count = (
-        database.get_alert_count_by_severity(
-            "CRITICAL"
-        )
-    )
-
-    high_count = (
-        database.get_alert_count_by_severity(
-            "HIGH"
-        )
-    )
-
-    medium_count = (
-        database.get_alert_count_by_severity(
-            "MEDIUM"
-        )
-    )
-
-    low_count = (
-        database.get_alert_count_by_severity(
-            "LOW"
-        )
-    )
-
-    # =====================================================
-    # NETWORK ACTIVITY
-    # =====================================================
-
-    st.markdown(
-        '<div id="network-activity"></div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        "## 🌐 NETWORK ACTIVITY"
-    )
-
-    st.write(
-        "A concise view of recent live network traffic captured by SENTRY. "
-        "Detailed telemetry is available below when investigation is needed."
-    )
-
-    # Keep this query bounded so the 1-second dashboard refresh
-    # does not repeatedly scan an ever-growing database.
-    recent_network_events = database.get_recent_network_events(
-    limit=500
-)
-
-    network_event_count = len(
-        recent_network_events
-    )
-
-    network_source_counts = Counter(
-        event["source_ip"]
-        for event in recent_network_events
-        if event["source_ip"]
-    )
-
-    network_destination_counts = Counter(
-        event["destination_ip"]
-        for event in recent_network_events
-        if event["destination_ip"]
-    )
-
-    network_protocol_counts = Counter(
-        event["protocol"]
-        for event in recent_network_events
-        if event["protocol"]
-    )
-
-    network_port_counts = Counter(
-        event["destination_port"]
-        for event in recent_network_events
-        if event["destination_port"] is not None
-    )
-
-    network_flow_keys = {
-        (
-            event["source_ip"],
-            event["destination_ip"],
-            event["protocol"],
-            event["destination_port"],
-        )
-        for event in recent_network_events
-    }
-
-    network_metric1, network_metric2, network_metric3, network_metric4 = (
-        st.columns(4)
-    )
-
-    with network_metric1:
-
-        st.metric(
-            "NETWORK EVENTS (LAST 500)",
-            network_event_count,
-        )
-
-    with network_metric2:
-
-        st.metric(
-            "UNIQUE FLOWS",
-            len(network_flow_keys),
-        )
-
-    with network_metric3:
-
-        st.metric(
-            "UNIQUE SOURCE IPS",
-            len(network_source_counts),
-        )
-
-    recent_network_alerts = [
-        alert
-        for alert in database.get_recent_alerts(limit=500)
-        if str(alert["rule_id"]).startswith("NET-")
-    ]
-
-    with network_metric4:
-
-        st.metric(
-            "NETWORK ALERTS",
-            len(recent_network_alerts),
-        )
-
-    if recent_network_events:
-
-        st.markdown(
-            "### Traffic Snapshot"
-        )
-
-        protocol_items = (
-            network_protocol_counts.most_common()
-        )
-
-        if protocol_items:
-
-            protocol_columns = st.columns(
-                min(len(protocol_items), 4)
-            )
-
-            for index, (
-                protocol,
-                count,
-            ) in enumerate(
-                protocol_items[:4]
-            ):
-
-                with protocol_columns[index]:
-
-                    st.metric(
-                        protocol,
-                        count,
-                    )
-
-        st.markdown(
-            "### Top Communicating Hosts"
-        )
-
-        # -------------------------------------------------
-        # IDENTIFY LOCAL HOST ADDRESSES
-        # -------------------------------------------------
-
-        local_addresses = {
-            "127.0.0.1",
-            "::1",
-        }
-
-        for interface in capture_interfaces.values():
-
-            interface_ip_value = getattr(
-                interface,
-                "ip",
-                None,
-            )
-
-            if interface_ip_value:
-
-                local_addresses.add(
-                    str(interface_ip_value)
-                )
-
-        # -------------------------------------------------
-        # BUILD HOST ACTIVITY SUMMARY
-        # -------------------------------------------------
-
-        host_activity = {}
-
-        for event in recent_network_events:
-
-            source_ip = (
-                event["source_ip"]
-                or "—"
-            )
-
-            destination_ip = (
-                event["destination_ip"]
-                or "—"
-            )
-
-            event_count = 1
-
-            # ---------------------------------------------
-            # SOURCE HOST
-            # ---------------------------------------------
-
-            if source_ip != "—":
-
-                if source_ip not in host_activity:
-
-                    host_activity[source_ip] = {
-                        "Host": source_ip,
-                        "Role": (
-                            "LOCAL"
-                            if source_ip in local_addresses
-                            else "REMOTE"
-                        ),
-                        "Outbound Events": 0,
-                        "Inbound Events": 0,
-                        "Total Events": 0,
-                    }
-
-                host_activity[source_ip][
-                    "Outbound Events"
-                ] += event_count
-
-                host_activity[source_ip][
-                    "Total Events"
-                ] += event_count
-
-            # ---------------------------------------------
-            # DESTINATION HOST
-            # ---------------------------------------------
-
-            if destination_ip != "—":
-
-                if destination_ip not in host_activity:
-
-                    host_activity[destination_ip] = {
-                        "Host": destination_ip,
-                        "Role": (
-                            "LOCAL"
-                            if destination_ip in local_addresses
-                            else "REMOTE"
-                        ),
-                        "Outbound Events": 0,
-                        "Inbound Events": 0,
-                        "Total Events": 0,
-                    }
-
-                host_activity[destination_ip][
-                    "Inbound Events"
-                ] += event_count
-
-                host_activity[destination_ip][
-                    "Total Events"
-                ] += event_count
-
-        host_rows = sorted(
-            host_activity.values(),
-            key=lambda row: row["Total Events"],
-            reverse=True,
-        )[:10]
-
-        # -------------------------------------------------
-        # DISPLAY HOST ACTIVITY
-        # -------------------------------------------------
-
+    with st.container(border=True):
         st.dataframe(
-            host_rows,
+            event_table_rows(rows),
             width="stretch",
             hide_index=True,
-            column_config={
-                "Host": st.column_config.TextColumn(
-                    "Host",
-                    width="large",
-                ),
-                "Role": st.column_config.TextColumn(
-                    "Role",
-                    width="small",
-                ),
-                "Outbound Events": st.column_config.NumberColumn(
-                    "Outbound",
-                    width="small",
-                ),
-                "Inbound Events": st.column_config.NumberColumn(
-                    "Inbound",
-                    width="small",
-                ),
-                "Total Events": st.column_config.NumberColumn(
-                    "Total Events",
-                    width="small",
-                ),
-            },
+            height=520,
         )
 
-        st.caption(
-            "LOCAL hosts are addresses assigned to this system. "
-            "REMOTE hosts are external systems observed in captured traffic."
+    st.caption(
+        "Origin is recorded by the producer: LIVE for captured network "
+        "traffic, SYNTHETIC for generated demonstrations, UNKNOWN for "
+        "historical rows that predate origin labelling."
+    )
+
+
+# =============================================================
+# PAGE: SYNTHETIC LAB
+# =============================================================
+
+def render_synthetic_lab():
+    page_header(
+        "Demonstration / synthetic data",
+        "Synthetic Lab",
+        "Exercise the full detection pipeline with clearly labelled "
+        "simulated events. Nothing is generated until you press the button.",
+    )
+
+    st.markdown(
+        """
+        <div class="banner banner-synthetic">
+            <strong>Simulated data</strong> · Every event created here is
+            stored with origin SYNTHETIC and is visually distinguished from
+            live network observations throughout SENTRY. Synthetic events
+            are useful for demonstrations, rule testing and onboarding.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    control_col, action_col = st.columns([1.2, 1])
+
+    with control_col:
+        with st.container(border=True):
+            section_title(
+                "Configure a scenario",
+                "Five scenarios cover normal traffic and common attacks.",
+            )
+
+            scenario_label = st.selectbox(
+                "Security scenario",
+                list(SCENARIOS.keys()),
+                key="synthetic_scenario",
+            )
+
+            intensity = st.selectbox(
+                "Attack intensity",
+                ["Low", "Medium", "High", "Critical"],
+                index=1,
+                key="synthetic_intensity",
+            )
+
+            st.caption(
+                "Detection thresholds, evidence, severity and MITRE "
+                "mappings are identical to live processing."
+            )
+
+    with action_col:
+        with st.container(border=True):
+            section_title("Generate")
+
+            st.write(
+                "Generation is an explicit action. SENTRY never seeds "
+                "synthetic events at startup."
+            )
+
+            generate = st.button(
+                "Generate synthetic events",
+                type="primary",
+                width="stretch",
+                key="generate_synthetic",
+            )
+
+    if generate:
+        events = generator.generate(
+            scenario=SCENARIOS[scenario_label],
+            intensity=intensity.lower(),
         )
+
+        alerts = pipeline.process_events(events)
+
+        st.session_state.last_synthetic_run = {
+            "timestamp": datetime.now().isoformat(),
+            "scenario": scenario_label,
+            "intensity": intensity,
+            "events": len(events),
+            "alerts": len(alerts),
+        }
+
+        st.rerun()
+
+    summary = st.session_state.get("last_synthetic_run")
+
+    if summary:
+        st.markdown("")
+
+        summary_cols = st.columns(4)
+
+        with summary_cols[0]:
+            metric_card(
+                "Scenario",
+                summary["scenario"],
+                summary["intensity"],
+                "accent",
+            )
+
+        with summary_cols[1]:
+            metric_card(
+                "Events generated",
+                f"{summary['events']:,}",
+                "Stored as SYNTHETIC",
+                "accent",
+            )
+
+        with summary_cols[2]:
+            metric_card(
+                "Alerts generated",
+                f"{summary['alerts']:,}",
+                "New detections",
+                "high",
+            )
+
+        with summary_cols[3]:
+            metric_card(
+                "Generated at",
+                format_timestamp(summary["timestamp"]),
+                "Local time",
+                "muted",
+            )
+
+        st.caption(
+            f"Last run · {summary['scenario']} "
+            f"({summary['intensity'].lower()} intensity) · "
+            f"{summary['events']} events · {summary['alerts']} alerts."
+        )
+
+    # ---------------------------------------------------------
+    # SYNTHETIC DATA IN THE STORE
+    # ---------------------------------------------------------
+
+    origin_counts = {
+        row["origin"]: row["count"]
+        for row in database.get_event_origin_counts()
+    }
+
+    synthetic_total = origin_counts.get("SYNTHETIC", 0)
+
+    with st.container(border=True):
+        section_title(
+            "Synthetic events in the database",
+            f"{synthetic_total:,} events are currently labelled SYNTHETIC.",
+        )
+
+        synthetic_events = database.get_events_page(
+            origin="SYNTHETIC",
+            limit=15,
+        )
+
+        if not synthetic_events:
+            st.info(
+                "No synthetic events have been generated yet. Choose a "
+                "scenario above and press Generate synthetic events."
+            )
+        else:
+            st.dataframe(
+                event_table_rows(synthetic_events),
+                width="stretch",
+                hide_index=True,
+            )
+
+            st.caption(
+                "These events are demonstrations. They do not represent "
+                "network activity observed on this machine."
+            )
+
+    # ---------------------------------------------------------
+    # RECENT SYNTHETIC ALERTS
+    # ---------------------------------------------------------
+
+    recent_alerts = database.get_recent_alerts(limit=100)
+    synthetic_alerts = [
+        alert
+        for alert in recent_alerts
+        if normalise_origin(
+            alert["event_origin"]
+            if "event_origin" in alert.keys()
+            else None
+        )
+        == "SYNTHETIC"
+    ]
+
+    if synthetic_alerts:
+        with st.container(border=True):
+            section_title(
+                "Recent synthetic alerts",
+                "Detections produced by demonstration events.",
+            )
+
+            st.dataframe(
+                alert_table_rows(synthetic_alerts[:10]),
+                width="stretch",
+                hide_index=True,
+            )
+
+
+# =============================================================
+# PAGE: DETECTION RULES
+# =============================================================
+
+def render_detection_rules():
+    page_header(
+        "Configuration / detection",
+        "Detection Rules",
+        "Read-only view of the active rule configuration. Rule behaviour "
+        "and thresholds are unchanged in this release.",
+    )
+
+    rules_config = load_rules_config()
+
+    rows = []
+
+    for rule_id, metadata in RULE_METADATA.items():
+        config = rules_config.get(rule_id, {})
+        mitre = metadata.get("mitre") or {}
+
+        rows.append(
+            {
+                "Rule ID": rule_id,
+                "Name": metadata.get("name", "—"),
+                "Severity": metadata.get("severity", "—"),
+                "Enabled": (
+                    "Yes" if config.get("enabled", True) else "No"
+                ),
+                "Threshold": str(
+                    config.get("threshold", "—")
+                ),
+                "Window (s)": str(
+                    config.get("window_seconds", "—")
+                ),
+                "Cooldown (s)": str(
+                    config.get("dedup_cooldown_seconds", "—")
+                ),
+                "MITRE ID": mitre.get("technique_id", "—"),
+            }
+        )
+
+    with st.container(border=True):
+        st.dataframe(
+            rows,
+            width="stretch",
+            hide_index=True,
+        )
+
+    for rule_id, metadata in RULE_METADATA.items():
+        mitre = metadata.get("mitre") or {}
+        config = rules_config.get(rule_id, {})
 
         with st.expander(
-            "🔎 Detailed Network Telemetry"
+            f"{metadata.get('name', rule_id)} · {rule_id}",
         ):
+            st.write(metadata.get("description", "—"))
 
-            detail_col1, detail_col2 = (
-                st.columns(2)
+            st.caption(
+                f"MITRE ATT&CK · "
+                f"{mitre.get('technique_id', '—')} "
+                f"{mitre.get('technique', '')} · "
+                f"{mitre.get('tactic', '—')}   |   "
+                f"Threshold · {config.get('threshold', '—')}   |   "
+                f"Window · {config.get('window_seconds', '—')} seconds"
             )
 
-            with detail_col1:
+            actions = metadata.get("recommended_actions") or []
 
-                st.markdown(
-                    "### Top Destination Ports"
-                )
+            if actions:
+                st.markdown("**Recommended actions**")
 
-                port_rows = [
-                    {
-                        "Destination Port": port,
-                        "Events": count,
-                    }
-                    for port, count
-                    in network_port_counts.most_common(10)
-                ]
+                for action in actions:
+                    st.markdown(f"- {action}")
 
-                st.dataframe(
-                    port_rows,
-                    width="stretch",
-                    hide_index=True,
-                )
+    st.caption(
+        "Edit config/detection_rules.json to enable or disable rules and "
+        "change thresholds. Changes apply on the next pipeline run."
+    )
 
-            with detail_col2:
 
-                st.markdown(
-                    "### Protocol Distribution"
-                )
+# =============================================================
+# PAGE: ABOUT
+# =============================================================
 
-                protocol_rows = [
-                    {
-                        "Protocol": protocol,
-                        "Events": count,
-                    }
-                    for protocol, count
-                    in network_protocol_counts.most_common()
-                ]
+def render_about():
+    page_header(
+        "Product / information",
+        "About SENTRY",
+        "A local-first, rule-based SIEM with explainable detections, "
+        "live capture and clearly separated demonstration data.",
+    )
 
-                st.dataframe(
-                    protocol_rows,
-                    width="stretch",
-                    hide_index=True,
-                )
+    origin_counts = {
+        row["origin"]: row["count"]
+        for row in database.get_event_origin_counts()
+    }
 
-            # =================================================
-            # RECENT NETWORK EVENTS
-            # =================================================
+    alert_origins = {
+        row["origin"]: row["count"]
+        for row in database.get_alert_origin_counts()
+    }
+
+    db_file = Path(DATABASE_PATH)
+    db_size = (
+        db_file.stat().st_size / (1024 * 1024)
+        if db_file.exists()
+        else 0
+    )
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        with st.container(border=True):
+            section_title("Deployment")
 
             st.markdown(
-                "### Recent Network Evidence"
+                f"""
+                <div class="muted" style="line-height:2;">
+                Version <strong>{esc(SENTRY_VERSION)}</strong><br>
+                Database <span class="mono">{esc(db_file.resolve())}</span><br>
+                Size <strong>{db_size:.1f} MB</strong><br>
+                Events <strong>{database.get_event_count():,}</strong><br>
+                Alerts <strong>{database.get_alert_count():,}</strong><br>
+                Python <strong>{esc(sys.version.split()[0])}</strong><br>
+                Npcap <strong>{'available' if npcap_available() else 'not detected'}</strong>
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
 
-            # ---------------------------------------------
-            # EVENT FILTERS
-            # ---------------------------------------------
+    with col2:
+        with st.container(border=True):
+            section_title("Data provenance")
 
-            (
-                network_filter_col1,
-                network_filter_col2,
-                network_filter_col3,
-                network_filter_col4,
-            ) = st.columns(4)
-
-            with network_filter_col1:
-
-                direction_filter = st.selectbox(
-                    "Direction",
-                    [
-                        "All",
-                        "Inbound",
-                        "Outbound",
-                        "Local",
-                        "Unknown",
-                    ],
-                    key="network_direction_filter",
-                )
-
-            with network_filter_col2:
-
-                initiation_filter = st.selectbox(
-                    "Connection Initiated",
-                    [
-                        "All",
-                        "Initiated",
-                        "Not Initiated",
-                        "Unknown",
-                    ],
-                    key="network_initiation_filter",
-                )
-
-            with network_filter_col3:
-
-                protocol_filter = st.selectbox(
-                    "Protocol",
-                    [
-                        "All",
-                        "TCP",
-                        "UDP",
-                        "IP",
-                    ],
-                    key="network_protocol_filter",
-                )
-
-            with network_filter_col4:
-
-                display_limit = st.selectbox(
-                    "Events Shown",
-                    [15, 50, 100, 250, 500],
-                    key="network_event_limit",
-                )
-
-            filtered_network_events = [
-                event
-                for event in recent_network_events
-                if network_event_matches_filters(
-                    event,
-                    direction_filter,
-                    initiation_filter,
-                    protocol_filter,
-                )
-            ]
-
-            visible_network_events = (
-                filtered_network_events[:display_limit]
+            st.markdown(
+                f"""
+                <div style="line-height:2.1;">
+                {origin_badge('LIVE')}
+                <strong>{origin_counts.get('LIVE', 0):,}</strong>
+                events / <strong>{alert_origins.get('LIVE', 0):,}</strong> alerts<br>
+                {origin_badge('SYNTHETIC')}
+                <strong>{origin_counts.get('SYNTHETIC', 0):,}</strong>
+                events / <strong>{alert_origins.get('SYNTHETIC', 0):,}</strong> alerts<br>
+                {origin_badge('UNKNOWN')}
+                <strong>{origin_counts.get('UNKNOWN', 0):,}</strong>
+                events / <strong>{alert_origins.get('UNKNOWN', 0):,}</strong> alerts
+                </div>
+                """,
+                unsafe_allow_html=True,
             )
 
             st.caption(
-                f"Showing {len(visible_network_events)} of "
-                f"{len(recent_network_events)} recent network "
-                f"events. Filters: {direction_filter} direction · "
-                f"{initiation_filter} connection · "
-                f"{protocol_filter} protocol."
+                "Origin is recorded when an event is produced. Historical "
+                "rows are never reclassified by guessing."
             )
 
-            if not visible_network_events:
+    with st.container(border=True):
+        section_title("Operating principles")
 
-                st.info(
-                    "No network events match the selected filters."
-                )
-
-            recent_event_rows = []
-
-            for event in visible_network_events:
-
-                timestamp = event["timestamp"]
-
-                if timestamp is not None:
-
-                    timestamp = str(
-                        timestamp
-                    ).replace(
-                        "T",
-                        " ",
-                    )
-
-                    # Keep the dashboard display compact
-                    # while preserving the original database
-                    # timestamp.
-                    if "." in timestamp:
-
-                        timestamp = (
-                            timestamp.split(".")[0]
-                        )
-
-                source_ip = (
-                    event["source_ip"]
-                    or "—"
-                )
-
-                destination_ip = (
-                    event["destination_ip"]
-                    or "—"
-                )
-
-                recent_event_rows.append(
-                    {
-                        "Time": (
-                            timestamp
-                            or "—"
-                        ),
-                        "Direction": (
-                            describe_event_direction(
-                                event
-                            )
-                        ),
-                        "Initiated": (
-                            describe_connection_initiation(
-                                event
-                            )
-                        ),
-                        "Source IP": source_ip,
-                        "Source Port": (
-                            _port_display(
-                                _event_value(
-                                    event,
-                                    "source_port",
-                                )
-                            )
-                        ),
-                        "Destination IP": destination_ip,
-                        "Destination Port": (
-                            _port_display(
-                                _event_value(
-                                    event,
-                                    "destination_port",
-                                )
-                            )
-                        ),
-                        "Protocol": (
-                            event["protocol"]
-                            or "—"
-                        ),
-                        "Event Type": (
-                            event["event_type"]
-                            or "—"
-                        ),
-                    }
-                )
-
-            st.dataframe(
-                recent_event_rows,
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "Time": st.column_config.TextColumn(
-                        "Time",
-                        width="medium",
-                    ),
-                    "Direction": st.column_config.TextColumn(
-                        "Direction",
-                        width="small",
-                        help=(
-                            "Direction of this packet relative to "
-                            "this host, recorded at capture time. "
-                            "Historical events show Unknown."
-                        ),
-                    ),
-                    "Initiated": st.column_config.TextColumn(
-                        "Initiated",
-                        width="small",
-                        help=(
-                            "Yes = TCP SYN without ACK or first UDP "
-                            "packet (connection initiation). "
-                            "No = reply or mid-stream packet. "
-                            "Unknown = historical event or a protocol "
-                            "without connection setup."
-                        ),
-                    ),
-                    "Source IP": st.column_config.TextColumn(
-                        "Source IP",
-                        width="large",
-                    ),
-                    "Source Port": st.column_config.TextColumn(
-                        "Source Port",
-                        width="small",
-                    ),
-                    "Destination IP": st.column_config.TextColumn(
-                        "Destination IP",
-                        width="large",
-                    ),
-                    "Destination Port": st.column_config.TextColumn(
-                        "Destination Port",
-                        width="small",
-                    ),
-                    "Protocol": st.column_config.TextColumn(
-                        "Protocol",
-                        width="small",
-                    ),
-                    "Event Type": st.column_config.TextColumn(
-                        "Event Type",
-                        width="medium",
-                    ),
-                },
-            )
-
-            st.caption(
-                "Direction and initiation come from capture-time "
-                "metadata. A ✅ Yes marks a connection initiation; "
-                "a ❌ No marks a reply or mid-stream packet. "
-                "Events captured before this metadata existed show "
-                "❔ Unknown."
-            )
-
-            # =================================================
-            # NETWORK FLOW SUMMARY
-            # =================================================
-
-            st.markdown(
-                "### Network Flow Summary"
-            )
-
-            flow_groups = {}
-
-            for event in recent_network_events:
-
-                source_ip = (
-                    event["source_ip"]
-                    or "—"
-                )
-
-                destination_ip = (
-                    event["destination_ip"]
-                    or "—"
-                )
-
-                protocol = (
-                    event["protocol"]
-                    or "—"
-                )
-
-                destination_port = (
-                    event["destination_port"]
-                )
-
-                flow_key = (
-                    source_ip,
-                    destination_ip,
-                    protocol,
-                    destination_port,
-                )
-
-                timestamp = event["timestamp"]
-
-                if timestamp is not None:
-
-                    timestamp = str(
-                        timestamp
-                    ).replace(
-                        "T",
-                        " ",
-                    )
-
-                if flow_key not in flow_groups:
-
-                    flow_groups[flow_key] = {
-                        "Source IP": source_ip,
-                        "Destination IP": destination_ip,
-                        "Protocol": protocol,
-                        "Destination Port": (
-                            str(destination_port)
-                            if destination_port is not None
-                            else "—"
-                        ),
-                        "Event Count": 0,
-                        "First Seen": timestamp or "—",
-                        "Last Seen": timestamp or "—",
-                    }
-
-                flow_groups[flow_key]["Event Count"] += 1
-
-                current_first = (
-                    flow_groups[flow_key]["First Seen"]
-                )
-
-                current_last = (
-                    flow_groups[flow_key]["Last Seen"]
-                )
-
-                if timestamp:
-
-                    if (
-                        current_first == "—"
-                        or timestamp < current_first
-                    ):
-
-                        flow_groups[flow_key][
-                            "First Seen"
-                        ] = timestamp
-
-                    if (
-                        current_last == "—"
-                        or timestamp > current_last
-                    ):
-
-                        flow_groups[flow_key][
-                            "Last Seen"
-                        ] = timestamp
-
-            flow_rows = sorted(
-                flow_groups.values(),
-                key=lambda row: row["Event Count"],
-                reverse=True,
-            )[:15]
-
-            st.dataframe(
-                flow_rows,
-                width="stretch",
-                hide_index=True,
-                column_config={
-                    "Source IP": st.column_config.TextColumn(
-                        "Source IP",
-                        width="large",
-                    ),
-                    "Destination IP": st.column_config.TextColumn(
-                        "Destination IP",
-                        width="large",
-                    ),
-                    "Protocol": st.column_config.TextColumn(
-                        "Protocol",
-                        width="small",
-                    ),
-                    "Destination Port": st.column_config.TextColumn(
-                        "Destination Port",
-                        width="small",
-                    ),
-                    "Event Count": st.column_config.NumberColumn(
-                        "Event Count",
-                        width="small",
-                    ),
-                    "First Seen": st.column_config.TextColumn(
-                        "First Seen",
-                        width="medium",
-                    ),
-                    "Last Seen": st.column_config.TextColumn(
-                        "Last Seen",
-                        width="medium",
-                    ),
-                },
-            )
-
-    else:
-
-        st.info(
-            "No network activity has been captured yet. "
-            "Start live monitoring to begin collecting network events."
+        st.markdown(
+            """
+            - **Local-first** — events, alerts and investigations live in
+              SQLite on this machine.
+            - **Explainable** — every alert carries the rule, conditions,
+              evidence, MITRE mapping and recommended actions.
+            - **Honest provenance** — SYNTHETIC demonstration data and LIVE
+              captured traffic are separate and labelled.
+            - **Bounded queries** — dashboards read recent or aggregated
+              data instead of loading the entire event store.
+            - **No hidden automation** — synthetic events are only created
+              by an explicit action in the Synthetic Lab.
+            """
         )
 
-    # =====================================================
-    # SYSTEM STATUS
-    # =====================================================
-
-    st.markdown(
-        "## SYSTEM STATUS"
-    )
-
-    status1, status2, status3 = st.columns(3)
-
-    with status1:
-
-        st.success(
-            "🟢 Detection Engine Online"
-        )
-
-    with status2:
-
-        st.success(
-            "🟢 Database Connected"
-        )
-
-    with status3:
-
-        if _network_monitor_running():
-
-            st.success(
-                "🟢 Live Monitoring Active"
-            )
-
-        else:
-
-            st.info(
-                "⚪ Live Monitoring Standby"
-            )
-
-    # =====================================================
-    # SECURITY OVERVIEW
-    # =====================================================
-
-    st.markdown(
-        '<div id="security-overview"></div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        "## SECURITY OVERVIEW"
-    )
-
-    metric1, metric2, metric3, metric4, metric5 = (
-        st.columns(5)
-    )
-
-    with metric1:
-
-        st.metric(
-            "EVENTS PROCESSED",
-            total_events,
-        )
-
-    with metric2:
-
-        st.metric(
-            "ALERTS GENERATED",
-            total_alerts,
-        )
-
-    with metric3:
-
-        st.metric(
-            "OPEN ALERTS",
-            open_alerts,
-        )
-
-    with metric4:
-
-        st.metric(
-            "INVESTIGATING",
-            investigating_alerts,
-        )
-
-    with metric5:
-
-        st.metric(
-            "RESOLVED",
-            resolved_alerts,
-        )
-
-    # =====================================================
-    # ALERT LIFECYCLE
-    # =====================================================
-
-    st.markdown(
-        "## 🚨 ALERT LIFECYCLE"
-    )
-
-    lifecycle1, lifecycle2, lifecycle3, lifecycle4 = (
-        st.columns(4)
-    )
-
-    with lifecycle1:
-
-        st.metric(
-            "OPEN",
-            open_alerts,
-        )
-
-    with lifecycle2:
-
-        st.metric(
-            "INVESTIGATING",
-            investigating_alerts,
-        )
-
-    with lifecycle3:
-
-        st.metric(
-            "RESOLVED",
-            resolved_alerts,
-        )
-
-    with lifecycle4:
-
-        st.metric(
-            "FALSE POSITIVE",
-            false_positive_alerts,
-        )
-
-    # =====================================================
-    # ALERT SEVERITY
-    # =====================================================
-
-    st.markdown(
-        "## ⚠️ ALERT SEVERITY"
-    )
-
-    severity1, severity2, severity3, severity4 = (
-        st.columns(4)
-    )
-
-    with severity1:
-
-        st.metric(
-            "CRITICAL",
-            critical_count,
-        )
-
-    with severity2:
-
-        st.metric(
-            "HIGH",
-            high_count,
-        )
-
-    with severity3:
-
-        st.metric(
-            "MEDIUM",
-            medium_count,
-        )
-
-    with severity4:
-
-        st.metric(
-            "LOW",
-            low_count,
-        )
-
-    # =====================================================
-    # LOAD RECENT ALERTS
-    # =====================================================
-
-    recent_alerts = database.get_recent_alerts(
-        limit=50
-    )
-
-    # =====================================================
-    # RECENT SECURITY ALERTS
-    # =====================================================
-
-    st.markdown(
-        '<div id="recent-security-alerts"></div>',
-        unsafe_allow_html=True,
-    )
-
-    st.markdown(
-        "## 🚨 RECENT SECURITY ALERTS"
-    )
-
-    if not recent_alerts:
-
-        st.info(
-            "No security alerts have been recorded yet."
-        )
-
-    else:
-
-        # -------------------------------------------------
-        # FILTERS
-        # -------------------------------------------------
-
-        filter1, filter2, filter3 = (
-            st.columns(3)
-        )
-
-        with filter1:
-
-            severity_filter = st.selectbox(
-                "Severity",
-                [
-                    "All",
-                    "CRITICAL",
-                    "HIGH",
-                    "MEDIUM",
-                    "LOW",
-                ],
-                key="alert_severity_filter",
-            )
-
-        with filter2:
-
-            status_filter = st.selectbox(
-                "Alert Status",
-                [
-                    "All",
-                    "OPEN",
-                    "INVESTIGATING",
-                    "RESOLVED",
-                    "FALSE_POSITIVE",
-                ],
-                key="alert_status_filter",
-            )
-
-        with filter3:
-
-            detection_types = sorted(
-                set(
-                    alert["alert_type"]
-                    for alert in recent_alerts
-                )
-            )
-
-            detection_filter = st.selectbox(
-                "Detection",
-                ["All"] + detection_types,
-                key="alert_detection_filter",
-            )
-
-        # -------------------------------------------------
-        # SEARCH
-        # -------------------------------------------------
-
-        alert_search = st.text_input(
-            "Search alerts (source IP, rule, type, detail)",
-            key="alert_search",
-        ).strip().lower()
-
-        # -------------------------------------------------
-        # APPLY FILTERS
-        # -------------------------------------------------
-
-        filtered_alerts = []
-
-        for alert in recent_alerts:
-
-            if (
-                severity_filter != "All"
-                and alert["severity"]
-                != severity_filter
-            ):
-
-                continue
-
-            if (
-                status_filter != "All"
-                and alert["status"]
-                != status_filter
-            ):
-
-                continue
-
-            if (
-                detection_filter != "All"
-                and alert["alert_type"]
-                != detection_filter
-            ):
-
-                continue
-
-            if alert_search:
-
-                searchable = " ".join(
-                    str(
-                        alert[field] or ""
-                    )
-                    for field in (
-                        "source_ip",
-                        "rule_id",
-                        "alert_type",
-                        "detail",
-                    )
-                ).lower()
-
-                if alert_search not in searchable:
-
-                    continue
-
-            filtered_alerts.append(
-                alert
-            )
-
-        st.caption(
-            f"Showing {len(filtered_alerts)} "
-            f"of {len(recent_alerts)} recent alerts"
-        )
-
-        # -------------------------------------------------
-        # DISPLAY ALERTS
-        # -------------------------------------------------
-
-        for alert in filtered_alerts:
-
-            severity = alert["severity"]
-
-            status = alert["status"]
-
-            # ---------------------------------------------
-            # SEVERITY ICON
-            # ---------------------------------------------
-
-            if severity == "CRITICAL":
-
-                severity_icon = "🔴"
-
-            elif severity == "HIGH":
-
-                severity_icon = "🟠"
-
-            elif severity == "MEDIUM":
-
-                severity_icon = "🟡"
-
-            else:
-
-                severity_icon = "🟢"
-
-            # ---------------------------------------------
-            # STATUS ICON
-            # ---------------------------------------------
-
-            if status == "OPEN":
-
-                status_icon = "🔓"
-
-            elif status == "INVESTIGATING":
-
-                status_icon = "🔎"
-
-            elif status == "RESOLVED":
-
-                status_icon = "✅"
-
-            else:
-
-                status_icon = "⚪"
-
-            # ---------------------------------------------
-            # ALERT EXPANDER
-            # ---------------------------------------------
-
-            with st.expander(
-                f"{severity_icon} "
-                f"{alert['alert_type']} "
-                f"— {severity} "
-                f"— {status_icon} {status}"
-            ):
-
-                # -----------------------------------------
-                # ALERT INFORMATION
-                # -----------------------------------------
-
-                col1, col2 = st.columns(2)
-
-                with col1:
-
-                    st.write(
-                        f"**Source IP:** "
-                        f"{alert['source_ip']}"
-                    )
-
-                    st.write(
-                        f"**Rule ID:** "
-                        f"{alert['rule_id']}"
-                    )
-
-                    confidence_value = (
-                        alert["confidence"]
-                    )
-
-                    confidence_display = (
-                        f"{confidence_value:.0%}"
-                        if isinstance(
-                            confidence_value,
-                            (int, float),
-                        )
-                        else "unknown"
-                    )
-
-                    st.write(
-                        f"**Confidence:** "
-                        f"{confidence_display}"
-                    )
-
-                with col2:
-
-                    st.write(
-                        f"**Timestamp:** "
-                        f"{alert['timestamp']}"
-                    )
-
-                    st.write(
-                        f"**Alert ID:** "
-                        f"{alert['id']}"
-                    )
-
-                    st.write(
-                        f"**Current Status:** "
-                        f"`{status}`"
-                    )
-
-                # -----------------------------------------
-                # DETECTION DETAILS
-                # -----------------------------------------
-
-                st.markdown(
-                    "**Detection Details**"
-                )
-
-                st.code(
-                    alert["detail"]
-                )
-
-                # -----------------------------------------
-                # DETECTION EVIDENCE
-                # -----------------------------------------
-
-                st.markdown(
-                    "**🧾 WHY SENTRY DETECTED THIS**"
-                )
-
-                evidence = None
-
-                evidence_raw = alert["evidence_json"]
-
-                if evidence_raw:
-
-                    try:
-
-                        evidence = json.loads(
-                            evidence_raw
-                        )
-
-                    except (TypeError, ValueError):
-
-                        evidence = None
-
-                if not isinstance(evidence, dict):
-
-                    st.info(
-                        "Detection evidence is not available for "
-                        "this historical alert."
-                    )
-
-                else:
-
-                    evidence_mitre = (
-                        evidence.get("mitre") or {}
-                    )
-
-                    st.write(
-                        f"**Detection rule:** "
-                        f"`{evidence.get('rule_id', alert['rule_id'])}`"
-                        f" — "
-                        f"{evidence.get('rule_name', alert['alert_type'])}"
-                    )
-
-                    if evidence.get("rule_description"):
-
-                        st.write(
-                            f"**Rule description:** "
-                            f"{evidence['rule_description']}"
-                        )
-
-                    if evidence_mitre:
-
-                        st.caption(
-                            f"MITRE ATT&CK: "
-                            f"{evidence_mitre.get('technique_id', '—')} "
-                            f"{evidence_mitre.get('technique', '')} "
-                            f"({evidence_mitre.get('tactic', '—')})"
-                        )
-
-                    if evidence.get("explanation"):
-
-                        st.markdown(
-                            "**Why this indicates suspicious activity:** "
-                            f"{evidence['explanation']}"
-                        )
-
-                    evidence_conditions = (
-                        evidence.get("conditions") or []
-                    )
-
-                    if evidence_conditions:
-
-                        st.write(
-                            "**Triggering conditions**"
-                        )
-
-                        st.dataframe(
-                            [
-                                {
-                                    "Condition": (
-                                        condition.get(
-                                            "condition",
-                                            "—",
-                                        )
-                                    ),
-                                    "Expected": (
-                                        condition.get(
-                                            "expected",
-                                            "—",
-                                        )
-                                    ),
-                                    "Observed": (
-                                        condition.get(
-                                            "observed",
-                                            "—",
-                                        )
-                                    ),
-                                    "Result": (
-                                        condition.get(
-                                            "result",
-                                            "—",
-                                        )
-                                    ),
-                                }
-                                for condition in evidence_conditions
-                            ],
-                            width="stretch",
-                            hide_index=True,
-                        )
-
-                    evidence_window = (
-                        evidence.get("window") or {}
-                    )
-
-                    if evidence_window:
-
-                        st.caption(
-                            f"Detection window: "
-                            f"{evidence_window.get('start', '—')} "
-                            f"→ "
-                            f"{evidence_window.get('end', '—')} "
-                            f"({evidence_window.get('seconds', '—')}s)"
-                        )
-
-                    evidence_threshold = (
-                        evidence.get("threshold")
-                    )
-
-                    if evidence_threshold is not None:
-
-                        st.caption(
-                            f"Rule threshold: {evidence_threshold}"
-                        )
-
-                    triggering_events = (
-                        evidence.get("triggering_events") or []
-                    )
-
-                    if triggering_events:
-
-                        st.write(
-                            "**Matching events that triggered this "
-                            "alert**"
-                        )
-
-                        triggering_rows = []
-
-                        for triggering_event in triggering_events:
-
-                            event_time = (
-                                triggering_event.get(
-                                    "timestamp"
-                                )
-                                or "—"
-                            )
-
-                            event_time = (
-                                str(event_time)
-                                .replace("T", " ")
-                                .split(".")[0]
-                            )
-
-                            destination_port = (
-                                triggering_event.get(
-                                    "destination_port"
-                                )
-                            )
-
-                            triggering_rows.append(
-                                {
-                                    "Time": event_time,
-                                    "Source": (
-                                        triggering_event.get(
-                                            "source",
-                                            "—",
-                                        )
-                                    ),
-                                    "Event Type": (
-                                        triggering_event.get(
-                                            "event_type",
-                                            "—",
-                                        )
-                                    ),
-                                    "Source IP": (
-                                        triggering_event.get(
-                                            "source_ip"
-                                        )
-                                        or "—"
-                                    ),
-                                    "Destination IP": (
-                                        triggering_event.get(
-                                            "destination_ip"
-                                        )
-                                        or "—"
-                                    ),
-                                    "Destination Port": (
-                                        str(destination_port)
-                                        if destination_port
-                                        is not None
-                                        else "—"
-                                    ),
-                                    "User": (
-                                        triggering_event.get(
-                                            "username"
-                                        )
-                                        or "—"
-                                    ),
-                                    "Detail": (
-                                        triggering_event.get(
-                                            "path"
-                                        )
-                                        or triggering_event.get(
-                                            "raw"
-                                        )
-                                        or "—"
-                                    ),
-                                }
-                            )
-
-                        st.dataframe(
-                            triggering_rows,
-                            width="stretch",
-                            hide_index=True,
-                        )
-
-                        total_triggering = (
-                            evidence.get(
-                                "triggering_event_count"
-                            )
-                        )
-
-                        if (
-                            isinstance(total_triggering, int)
-                            and total_triggering
-                            > len(triggering_rows)
-                        ):
-
-                            st.caption(
-                                f"Showing first "
-                                f"{len(triggering_rows)} of "
-                                f"{total_triggering} matching events."
-                            )
-
-                    matched_pattern = (
-                        evidence.get("matched_pattern")
-                    )
-
-                    if matched_pattern:
-
-                        st.caption(
-                            f"Matched pattern: `{matched_pattern}`"
-                        )
-
-                    unique_ports = (
-                        evidence.get(
-                            "unique_destination_ports"
-                        )
-                        or []
-                    )
-
-                    if unique_ports:
-
-                        st.caption(
-                            "Unique destination ports: "
-                            + ", ".join(
-                                str(port)
-                                for port in unique_ports
-                            )
-                        )
-
-                    evidence_confidence = (
-                        evidence.get("confidence") or {}
-                    )
-
-                    confidence_score = (
-                        evidence_confidence.get("score")
-                    )
-
-                    if isinstance(
-                        confidence_score,
-                        (int, float),
-                    ):
-
-                        st.caption(
-                            f"Rule confidence "
-                            f"{confidence_score:.0%} — "
-                            f"{evidence_confidence.get('basis', '')}"
-                        )
-
-                    evidence_actions = (
-                        evidence.get(
-                            "recommended_actions"
-                        )
-                        or []
-                    )
-
-                    if evidence_actions:
-
-                        st.write(
-                            "**Recommended actions**"
-                        )
-
-                        for evidence_action in evidence_actions:
-
-                            st.write(
-                                f"- {evidence_action}"
-                            )
-
-                # -----------------------------------------
-                # THREAT INTELLIGENCE
-                # -----------------------------------------
-
-                st.markdown(
-                    "**🌍 Threat Intelligence**"
-                )
-
-                intel = None
-
-                intel_raw = alert["threat_intel_json"]
-
-                if intel_raw:
-
-                    try:
-
-                        intel = json.loads(
-                            intel_raw
-                        )
-
-                    except (TypeError, ValueError):
-
-                        intel = None
-
-                if not isinstance(intel, dict):
-
-                    st.caption(
-                        "No threat intelligence enrichment is "
-                        "stored for this alert."
-                    )
-
-                else:
-
-                    intel_status = str(
-                        intel.get("status", "unknown")
-                    ).upper()
-
-                    intel_col1, intel_col2 = (
-                        st.columns(2)
-                    )
-
-                    with intel_col1:
-
-                        st.write(
-                            f"**IP:** `{intel.get('ip') or '—'}`"
-                        )
-
-                        st.write(
-                            f"**Reputation:** `{intel_status}`"
-                        )
-
-                    with intel_col2:
-
-                        st.write(
-                            f"**Source:** "
-                            f"{intel.get('source') or '—'}"
-                        )
-
-                        st.write(
-                            f"**Last checked:** "
-                            f"{intel.get('last_checked') or '—'}"
-                        )
-
-                    if intel.get("details"):
-
-                        st.caption(
-                            str(intel["details"])
-                        )
-
-                    st.caption(
-                        "Unknown means no configured source has "
-                        "data for this address; it is not proof of "
-                        "benign activity."
-                    )
-
-                # -----------------------------------------
-                # RELATED EVENTS
-                # -----------------------------------------
-
-                st.markdown(
-                    "**🔎 Investigation Context — Related Events**"
-                )
-
-                st.caption(
-                    "Surrounding events from the same source within "
-                    "±120 seconds. This is investigation context and "
-                    "may include activity that did not trigger the "
-                    "rule; the triggering evidence is listed above."
-                )
-
-                related_events = (
-                    database.get_related_events(
-                        alert["source_ip"],
-                        alert["timestamp"],
-                        window_seconds=120,
-                    )
-                )
-
-                if not related_events:
-
-                    st.info(
-                        "No related events found within "
-                        "the investigation window."
-                    )
-
-                else:
-
-                    st.caption(
-                        f"Found {len(related_events)} "
-                        f"related events within ±120 seconds."
-                    )
-
-                    # -----------------------------------------
-                    # NETWORK CORRELATION
-                    # -----------------------------------------
-
-                    network_events = [
-                        event
-                        for event in related_events
-                        if event["source"] == "network"
-                    ]
-
-                    if network_events:
-
-                        source_ips = {
-                            event["source_ip"]
-                            for event in network_events
-                            if event["source_ip"]
-                        }
-
-                        destination_ips = {
-                            event["destination_ip"]
-                            for event in network_events
-                            if event["destination_ip"]
-                        }
-
-                        destination_ports = {
-                            event["destination_port"]
-                            for event in network_events
-                            if event["destination_port"] is not None
-                        }
-
-                        protocols = {
-                            event["protocol"]
-                            for event in network_events
-                            if event["protocol"]
-                        }
-
-                        timestamps = [
-                            str(event["timestamp"])
-                            for event in network_events
-                            if event["timestamp"]
-                        ]
-
-                        timestamps.sort()
-
-                        first_seen = (
-                            timestamps[0]
-                            if timestamps
-                            else "—"
-                        )
-
-                        last_seen = (
-                            timestamps[-1]
-                            if timestamps
-                            else "—"
-                        )
-
-                        first_seen = (
-                            first_seen
-                            .replace("T", " ")
-                            .split(".")[0]
-                        )
-
-                        last_seen = (
-                            last_seen
-                            .replace("T", " ")
-                            .split(".")[0]
-                        )
-
-                        st.markdown(
-                            "**📊 Network Correlation**"
-                        )
-
-                        correlation_col1, correlation_col2, correlation_col3 = (
-                            st.columns(3)
-                        )
-
-                        with correlation_col1:
-
-                            st.metric(
-                                "Network Events",
-                                len(network_events),
-                            )
-
-                            st.metric(
-                                "Unique Destinations",
-                                len(destination_ips),
-                            )
-
-                        with correlation_col2:
-
-                            st.metric(
-                                "Unique Ports",
-                                len(destination_ports),
-                            )
-
-                            st.metric(
-                                "Protocols",
-                                len(protocols),
-                            )
-
-                        with correlation_col3:
-
-                            st.metric(
-                                "Source IPs",
-                                len(source_ips),
-                            )
-
-                            st.metric(
-                                "Time Window",
-                                "±120 sec",
-                            )
-
-                        correlation_rows = [
-                            {
-                                "Source IP": (
-                                    ", ".join(
-                                        sorted(
-                                            source_ips
-                                        )
-                                    )
-                                    if source_ips
-                                    else "—"
-                                ),
-                                "Protocols": (
-                                    ", ".join(
-                                        sorted(
-                                            protocols
-                                        )
-                                    )
-                                    if protocols
-                                    else "—"
-                                ),
-                                "First Seen": first_seen,
-                                "Last Seen": last_seen,
-                            }
-                        ]
-
-                        st.dataframe(
-                            correlation_rows,
-                            width="stretch",
-                            hide_index=True,
-                        )
-
-                    # -----------------------------------------
-                    # NETWORK EVIDENCE
-                    # -----------------------------------------
-
-                    network_events = [
-                        event
-                        for event in related_events
-                        if event["source"] == "network"
-                    ]
-
-                    if network_events:
-
-                        st.markdown(
-                            "**🌐 Network Evidence**"
-                        )
-
-                        network_evidence_rows = []
-
-                        for event in network_events:
-
-                            event_timestamp = (
-                                event["timestamp"]
-                            )
-
-                            if event_timestamp is not None:
-
-                                event_timestamp = str(
-                                    event_timestamp
-                                ).replace(
-                                    "T",
-                                    " ",
-                                )
-
-                                if "." in event_timestamp:
-
-                                    event_timestamp = (
-                                        event_timestamp.split(
-                                            "."
-                                        )[0]
-                                    )
-
-                            network_evidence_rows.append(
-                                {
-                                    "Time": (
-                                        event_timestamp
-                                        or "—"
-                                    ),
-                                    "Direction": (
-                                        describe_event_direction(
-                                            event
-                                        )
-                                    ),
-                                    "Initiated": (
-                                        describe_connection_initiation(
-                                            event
-                                        )
-                                    ),
-                                    "Source IP": (
-                                        event["source_ip"]
-                                        or "—"
-                                    ),
-                                    "Source Port": (
-                                        _port_display(
-                                            _event_value(
-                                                event,
-                                                "source_port",
-                                            )
-                                        )
-                                    ),
-                                    "Destination IP": (
-                                        event["destination_ip"]
-                                        or "—"
-                                    ),
-                                    "Destination Port": (
-                                        _port_display(
-                                            _event_value(
-                                                event,
-                                                "destination_port",
-                                            )
-                                        )
-                                    ),
-                                    "Protocol": (
-                                        event["protocol"]
-                                        or "—"
-                                    ),
-                                    "Event Type": (
-                                        event["event_type"]
-                                        or "—"
-                                    ),
-                                }
-                            )
-
-                        st.dataframe(
-                            network_evidence_rows,
-                            width="stretch",
-                            hide_index=True,
-                            column_config={
-                                "Time": st.column_config.TextColumn(
-                                    "Time",
-                                    width="medium",
-                                ),
-                                "Direction": st.column_config.TextColumn(
-                                    "Direction",
-                                    width="small",
-                                    help=(
-                                        "Direction relative to this "
-                                        "host, recorded at capture "
-                                        "time."
-                                    ),
-                                ),
-                                "Initiated": st.column_config.TextColumn(
-                                    "Initiated",
-                                    width="small",
-                                    help=(
-                                        "Yes = connection initiation. "
-                                        "No = reply or mid-stream "
-                                        "packet. Unknown = historical "
-                                        "event or protocol without "
-                                        "connection setup."
-                                    ),
-                                ),
-                                "Source IP": st.column_config.TextColumn(
-                                    "Source IP",
-                                    width="large",
-                                ),
-                                "Source Port": st.column_config.TextColumn(
-                                    "Source Port",
-                                    width="small",
-                                ),
-                                "Destination IP": st.column_config.TextColumn(
-                                    "Destination IP",
-                                    width="large",
-                                ),
-                                "Destination Port": st.column_config.TextColumn(
-                                    "Destination Port",
-                                    width="small",
-                                ),
-                                "Protocol": st.column_config.TextColumn(
-                                    "Protocol",
-                                    width="small",
-                                ),
-                                "Event Type": st.column_config.TextColumn(
-                                    "Event Type",
-                                    width="medium",
-                                ),
-                            },
-                        )
-
-                    for event in related_events:
-
-                        event_timestamp = (
-                            event["timestamp"]
-                        )
-
-                        event_source = (
-                            event["source"].upper()
-                        )
-
-                        event_type = (
-                            event["event_type"]
-                        )
-
-                        event_line = (
-                            f"`{event_timestamp}` "
-                            f"**{event_source}** "
-                            f"`{event_type}`"
-                        )
-
-                        if event["source_ip"]:
-
-                            event_line += (
-                                f" — `{event['source_ip']}`"
-                            )
-
-                        if event["username"]:
-
-                            event_line += (
-                                f" — user "
-                                f"`{event['username']}`"
-                            )
-
-                        if event["path"]:
-
-                            event_line += (
-                                f" — `{event['method']} "
-                                f"{event['path']}`"
-                            )
-
-                        st.write(
-                            event_line
-                        )
-
-                # -----------------------------------------
-                # ALERT INVESTIGATION
-                # -----------------------------------------
-
-                st.markdown(
-                    "**🔍 Alert Investigation**"
-                )
-
-                investigation = (
-                    database.get_investigation(
-                        alert["id"]
-                    )
-                )
-
-                if investigation:
-
-                    existing_notes = (
-                        investigation[
-                            "analyst_notes"
-                        ]
-                        or ""
-                    )
-
-                    existing_action = (
-                        investigation[
-                            "recommended_action"
-                        ]
-                        or ""
-                    )
-
-                else:
-
-                    existing_notes = ""
-
-                    existing_action = ""
-
-                # -----------------------------------------
-                # INVESTIGATION SUMMARY
-                # -----------------------------------------
-
-                st.markdown(
-                    "**📊 Investigation Summary**"
-                )
-
-                network_events = [
-                    event
-                    for event in related_events
-                    if event["source"] == "network"
-                ]
-
-                investigation_event_count = len(
-                    related_events
-                )
-
-                investigation_network_count = len(
-                    network_events
-                )
-
-                investigation_sources = {
-                    event["source_ip"]
-                    for event in network_events
-                    if event["source_ip"]
-                }
-
-                investigation_destinations = {
-                    event["destination_ip"]
-                    for event in network_events
-                    if event["destination_ip"]
-                }
-
-                investigation_ports = {
-                    event["destination_port"]
-                    for event in network_events
-                    if event["destination_port"] is not None
-                }
-
-                investigation_protocols = {
-                    event["protocol"]
-                    for event in network_events
-                    if event["protocol"]
-                }
-
-                investigation_timestamps = [
-                    str(event["timestamp"])
-                    for event in network_events
-                    if event["timestamp"]
-                ]
-
-                investigation_timestamps.sort()
-
-                investigation_first_seen = (
-                    investigation_timestamps[0]
-                    if investigation_timestamps
-                    else "—"
-                )
-
-                investigation_last_seen = (
-                    investigation_timestamps[-1]
-                    if investigation_timestamps
-                    else "—"
-                )
-
-                investigation_first_seen = (
-                    investigation_first_seen
-                    .replace("T", " ")
-                    .split(".")[0]
-                )
-
-                investigation_last_seen = (
-                    investigation_last_seen
-                    .replace("T", " ")
-                    .split(".")[0]
-                )
-
-                summary_col1, summary_col2, summary_col3 = (
-                    st.columns(3)
-                )
-
-                with summary_col1:
-
-                    st.metric(
-                        "Related Events",
-                        investigation_event_count,
-                    )
-
-                    st.metric(
-                        "Network Events",
-                        investigation_network_count,
-                    )
-
-                with summary_col2:
-
-                    st.metric(
-                        "Unique Sources",
-                        len(investigation_sources),
-                    )
-
-                    st.metric(
-                        "Unique Destinations",
-                        len(investigation_destinations),
-                    )
-
-                with summary_col3:
-
-                    st.metric(
-                        "Unique Ports",
-                        len(investigation_ports),
-                    )
-
-                    st.metric(
-                        "Protocols",
-                        len(investigation_protocols),
-                    )
-
-                if investigation_network_count:
-
-                    st.caption(
-                        f"Network activity observed from "
-                        f"{investigation_first_seen} to "
-                        f"{investigation_last_seen} "
-                        f"within the ±120 second correlation window."
-                    )
-
-                # -----------------------------------------
-                # ANALYST NOTES
-                # -----------------------------------------
-
-                analyst_notes = st.text_area(
-                    "Analyst Notes",
-                    value=existing_notes,
-                    height=140,
-                    placeholder=(
-                        "Document what you observed "
-                        "during the investigation..."
-                    ),
-                    key=f"notes_{alert['id']}",
-                )
-
-                # -----------------------------------------
-                # RECOMMENDED ACTION
-                # -----------------------------------------
-
-                recommended_action = st.text_area(
-                    "Recommended Action",
-                    value=existing_action,
-                    height=120,
-                    placeholder=(
-                        "Describe the recommended response "
-                        "or next investigation step..."
-                    ),
-                    key=f"action_{alert['id']}",
-                )
-
-                # -----------------------------------------
-                # SAVE INVESTIGATION
-                # -----------------------------------------
-
-                if st.button(
-                    "💾 Save Investigation",
-                    key=(
-                        f"save_investigation_"
-                        f"{alert['id']}"
-                    ),
-                    width="stretch",
-                ):
-
-                    database.update_investigation(
-                        alert["id"],
-                        analyst_notes,
-                        recommended_action,
-                    )
-
-                    st.success(
-                        f"Investigation for Alert "
-                        f"#{alert['id']} saved successfully."
-                    )
-
-                    st.rerun()
-
-                # -----------------------------------------
-                # INVESTIGATION STATUS
-                # -----------------------------------------
-
-                st.markdown(
-                    "**Investigation Status**"
-                )
-
-                st.caption(
-                    f"Current status: `{status}`"
-                )
-
-                status_options = [
-                    "OPEN",
-                    "INVESTIGATING",
-                    "RESOLVED",
-                    "FALSE_POSITIVE",
-                ]
-
-                new_status = st.selectbox(
-                    "Change alert status",
-                    status_options,
-                    index=status_options.index(
-                        status
-                    ),
-                    key=f"status_{alert['id']}",
-                )
-
-                # -----------------------------------------
-                # UPDATE STATUS
-                # -----------------------------------------
-
-                if st.button(
-                    "Update Alert Status",
-                    key=f"update_{alert['id']}",
-                    width="stretch",
-                ):
-
-                    if new_status == status:
-
-                        st.info(
-                            f"Alert #{alert['id']} is already "
-                            f"`{new_status}`."
-                        )
-
-                    else:
-
-                        database.update_alert_status(
-                            alert["id"],
-                            new_status,
-                        )
-
-                        st.success(
-                            f"Alert #{alert['id']} updated to "
-                            f"`{new_status}`."
-                        )
-
-                        st.rerun()
-
-    # =====================================================
-    # ATTACK ANALYSIS
-    # =====================================================
-
-    st.markdown(
-        '<div id="attack-analysis"></div>',
-        unsafe_allow_html=True,
-    )
-
-    with st.expander(
-        "📊 ATTACK ANALYSIS",
-        expanded=False,
-    ):
-
-        if recent_alerts:
-
-            detection_counts = Counter(
-                alert["alert_type"]
-                for alert in recent_alerts
-            )
-
-            st.write(
-                "Detections by attack type"
-            )
-
-            st.bar_chart(
-                detection_counts
-            )
-
-            severity_counts = Counter(
-                alert["severity"]
-                for alert in recent_alerts
-            )
-
-            st.write(
-                "Alert severity distribution"
-            )
-
-            st.bar_chart(
-                severity_counts
-            )
-
-        else:
-
-            st.info(
-                "No alert data available for analysis."
-            )
-
-    # =====================================================
-    # EVENT STREAM
-    # =====================================================
-
-    st.markdown(
-        '<div id="recent-event-stream"></div>',
-        unsafe_allow_html=True,
-    )
-
-    with st.expander(
-        "📡 RECENT EVENT STREAM",
-        expanded=False,
-    ):
-
-        recent_events = (
-            database.get_recent_events(
-                limit=50
-            )
-        )
-
-        if not recent_events:
-
-            st.info(
-                "No security events have been recorded yet."
-            )
-
-        else:
-
-            for event in recent_events:
-
-                timestamp = event["timestamp"]
-
-                source = (
-                    event["source"].upper()
-                )
-
-                event_type = (
-                    event["event_type"]
-                )
-
-                line = (
-                    f"`{timestamp}` "
-                    f"**{source}** "
-                    f"`{event_type}`"
-                )
-
-                if event["source_ip"]:
-
-                    line += (
-                        f" — `{event['source_ip']}`"
-                    )
-
-                if event["username"]:
-
-                    line += (
-                        f" — user "
-                        f"`{event['username']}`"
-                    )
-
-                if event["path"]:
-
-                    line += (
-                        f" — `{event['method']} "
-                        f"{event['path']}`"
-                    )
-
-                st.write(
-                    line
-                )
-
-    # =====================================================
-    # FOOTER
-    # =====================================================
-
-    st.markdown("---")
-
-    st.markdown(
-        '<div class="sentry-footer">'
-        'SENTRY v1.0.0 — Persistent Security Monitoring'
-        '</div>',
-        unsafe_allow_html=True,
+    st.caption(
+        "Documentation: README.md, docs/ARCHITECTURE.md and "
+        "docs/DETECTIONS.md in the project directory."
     )
 
 
-# =========================================================
-# RUN DASHBOARD
-# =========================================================
+# =============================================================
+# SIDEBAR AND ROUTING
+# =============================================================
 
-dashboard()
+st.sidebar.markdown(
+    """
+    <div class="brand">
+        <svg width="38" height="42" viewBox="0 0 38 42" fill="none"
+             xmlns="http://www.w3.org/2000/svg">
+            <path d="M19 2L35 8V20C35 30 28.5 37 19 40C9.5 37 3 30 3 20V8L19 2Z"
+                  stroke="#22d3ee" stroke-width="2"/>
+            <path d="M19 8L29 12V20C29 26.5 25 31 19 33.5C13 31 9 26.5 9 20V12L19 8Z"
+                  fill="#0e7490" fill-opacity="0.35"/>
+            <path d="M13 20L17 24L25 15" stroke="#a5f3fc" stroke-width="2"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <div>
+            <div class="brand-name">SENTRY</div>
+            <div class="brand-sub">SECURITY OPERATIONS</div>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.sidebar.markdown(
+    '<div class="nav-label">OPERATIONS</div>',
+    unsafe_allow_html=True,
+)
+
+selected_page = st.sidebar.radio(
+    "Navigation",
+    NAV_PAGES,
+    label_visibility="collapsed",
+    key="nav_page",
+)
+
+running = network_monitor_running()
+
+st.sidebar.markdown(
+    f"""
+    <div class="sidebar-status">
+        <div><span class="dot {'dot-live' if running else 'dot-idle'}"></span>
+        <strong>{'Live capture running' if running else 'Live capture idle'}</strong></div>
+        <div><span class="dot dot-live"></span>SQLite connected</div>
+        <div><span class="dot {'dot-live' if npcap_available() else 'dot-warn'}"></span>
+        {'Npcap available' if npcap_available() else 'Npcap not detected'}</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.sidebar.markdown(
+    f'<div class="sidebar-footer">SENTRY v{esc(SENTRY_VERSION)}<br>'
+    "Local-first · rule-based · explainable</div>",
+    unsafe_allow_html=True,
+)
+
+if selected_page == NAV_PAGES[0]:
+    render_overview()
+elif selected_page == NAV_PAGES[1]:
+    render_live_monitoring()
+elif selected_page == NAV_PAGES[2]:
+    render_alerts()
+elif selected_page == NAV_PAGES[3]:
+    render_network_activity()
+elif selected_page == NAV_PAGES[4]:
+    render_event_explorer()
+elif selected_page == NAV_PAGES[5]:
+    render_synthetic_lab()
+elif selected_page == NAV_PAGES[6]:
+    render_detection_rules()
+else:
+    render_about()
+
+render_footer()

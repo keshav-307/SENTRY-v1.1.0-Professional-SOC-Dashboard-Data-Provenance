@@ -13,6 +13,14 @@ class SecurityEvent:
     source: str
     event_type: str
 
+    # Where this event came from:
+    #   "SYNTHETIC" - produced by SENTRY's built-in event generator
+    #   "LIVE"      - captured from real network traffic
+    #   "UNKNOWN"   - historical rows whose origin cannot be established
+    # None means the producer did not state an origin; the dashboard
+    # presents that as UNKNOWN.
+    event_origin: Optional[str] = None
+
     source_ip: Optional[str] = None
     destination_ip: Optional[str] = None
 
@@ -60,6 +68,10 @@ class Alert:
     rule_id: str
     confidence: float = 1.0
     evidence: Optional[dict] = None
+
+    # Origin of the events that produced this alert.
+    # SYNTHETIC, LIVE, or UNKNOWN for historical alerts.
+    event_origin: Optional[str] = None
 
     # Threat intelligence enrichment for the alert's source IP.
     # Populated by the pipeline; None means enrichment was not run.

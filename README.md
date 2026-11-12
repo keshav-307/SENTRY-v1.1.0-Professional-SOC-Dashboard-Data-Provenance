@@ -8,15 +8,23 @@ conditions triggered it, and why that behaviour is suspicious**.
 It needs no paid service, no cloud account, and no external log pipeline: you
 can run a complete detect → alert → investigate loop locally.
 
-**Version 1.0.0** · Python 3.10+ · Streamlit · SQLite · Scapy/Npcap
+**Version 1.1.0** · Python 3.10+ · Streamlit · SQLite · Scapy/Npcap
 
 ---
 
 ## Features
 
 - **Synthetic event generation** — normal traffic, SSH brute force, SQL
-  injection, path traversal, mixed campaigns, four intensity levels. Clearly
-  labelled as synthetic in the dashboard.
+  injection, path traversal, mixed campaigns, four intensity levels. Created
+  only from the explicit **Synthetic Lab** action and stored with origin
+  `SYNTHETIC`.
+- **Honest data provenance** — every event records whether it is `LIVE`
+  (captured from real traffic), `SYNTHETIC` (generated) or `UNKNOWN`
+  (historical rows that predate origin labelling). Filters and badges appear
+  throughout the dashboard; origins are never guessed from IP addresses.
+- **Professional SOC dashboard** — dark operations shell with eight working
+  pages: Security Overview, Live Network Monitoring, Alerts & Incidents,
+  Network Activity, Event Explorer, Synthetic Lab, Detection Rules and About.
 - **Real network monitoring** — Scapy/Npcap capture, interface selection,
   fixed or continuous durations, IPv4/IPv6/TCP/UDP metadata and DNS queries.
   Payloads are never stored. Batched processing and responsive STOP.
@@ -46,35 +54,80 @@ can run a complete detect → alert → investigate loop locally.
 
 ## Screenshots
 
-Captured from a real local run against the preserved demo database
+Captured from a real local run against the preserved database
 (`docs/screenshots/`). Live monitoring was idle in these captures.
 
-### Security overview and recent alerts
+### Security overview — real database metrics, origin split and charts
 
-![Security overview](docs/screenshots/02-security-overview.png)
+![Security overview](docs/screenshots/05-overview-v1.1.png)
 
-### Alert investigation — evidence, conditions, MITRE mapping, triggering events
+### Alerts & incidents — filters, origin labels and investigation workspace
 
-![Alert investigation](docs/screenshots/03-alert-evidence.png)
+![Alerts and incidents](docs/screenshots/06-alerts-v1.1.png)
 
-### Network activity — local/remote hosts, direction, flows
+### Network activity — hosts, ports and bounded event tables
 
-![Network activity](docs/screenshots/04-network-activity.png)
+![Network activity](docs/screenshots/07-network-activity-v1.1.png)
 
-### Live network monitoring controls
+### Synthetic Lab — explicit generation with a persistent simulated-data warning
 
-![Live network monitoring](docs/screenshots/01-dashboard-top.png)
+![Synthetic Lab](docs/screenshots/08-synthetic-lab-v1.1.png)
+
+### Live monitoring — interface, duration, run state and recent events
+
+![Live network monitoring](docs/screenshots/09-live-monitoring-v1.1.png)
+
+### Event Explorer — server-side origin/search filters and pagination
+
+![Event Explorer](docs/screenshots/10-event-explorer-v1.1.png)
+
+### Detection Rules — active configuration and MITRE mapping
+
+![Detection rules](docs/screenshots/11-detection-rules-v1.1.png)
+
+---
+
+## Data provenance
+
+SENTRY separates demonstration data from genuine observations at the event
+model and database level:
+
+| Origin | Meaning | Producer |
+|---|---|---|
+| `LIVE` | Captured from real network traffic | `sensors/network_sensor.py` |
+| `SYNTHETIC` | Generated for demonstration and rule testing | `core/generator.py` via Synthetic Lab |
+| `UNKNOWN` | Historical row whose origin cannot be established | Existing databases before v1.1 |
+
+`SecurityEvent.event_origin` is persisted in `events.event_origin`, and the
+origin of the triggering events is carried onto `alerts.event_origin`. The
+dashboard exposes **All Sources / Synthetic / Live / Unknown** filters in
+Alerts, Network Activity and Event Explorer, and labels every table with text
+(SYNTHETIC is cyan, LIVE is green, UNKNOWN is grey — never colour alone).
+
+Synthetic events are only created after an explicit **Generate synthetic
+events** action. SENTRY never seeds demonstration events on startup and never
+presents generated activity as a network observation. Detection thresholds,
+severity, confidence, evidence and MITRE mappings are identical for both
+origins.
+
+To keep demonstrations completely separate from production data, point SENTRY
+at another database file (the schema is created automatically):
+
+```powershell
+$env:SENTRY_DB_PATH = "demo.db"
+.\run_sentry.bat
+```
 
 ---
 
 ## Architecture
 
 ```
- Synthetic generator ─┐
+ Synthetic generator ─┐  event_origin=SYNTHETIC
  Live network sensor ─┼─► SecurityEvent ─► Detection engine ─► Alerts ─► SQLite ─► Dashboard
- HTTP ingestion API  ─┘                        │ evidence                  │
-                                               ▼                           ▼
-                                     Threat intel / anomaly        Notifications (optional)
+ HTTP ingestion API  ─┘  event_origin=UNKNOWN      │ evidence + origin       │
+                                                   ▼                         ▼
+                                         Threat intel / anomaly      Notifications (optional)
 ```
 
 | Component | File |
@@ -112,7 +165,7 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-Python 3.10+ is required. SENTRY v1.0.0 was developed and verified on
+Python 3.10+ is required. SENTRY v1.1.0 was developed and verified on
 Windows 11 with Python 3.14.7, Streamlit 1.63.0 and Scapy 2.7.0.
 The Linux/macOS steps below are provided but were not verified in this
 release.
@@ -163,7 +216,7 @@ generates events for you.
 .\.venv\Scripts\python.exe -m streamlit run app_v3.py
 ```
 
-### Linux/macOS (manual, not verified in v1.0.0)
+### Linux/macOS (manual, not verified in v1.1.0)
 
 SENTRY runs on Python 3.10+; the following is provided as guidance but was not
 tested for this release, so no Linux launcher is shipped.
@@ -177,17 +230,19 @@ python -m streamlit run app_v3.py
 
 Open <http://localhost:8501> on any platform.
 
-1. Generate synthetic events from the sidebar, or start **Live Network
+1. Open **Synthetic Lab** and generate a scenario, or start **Live Network
    Monitoring** on an interface.
-2. Review **Recent Security Alerts**, expand one, and read **WHY SENTRY
-   DETECTED THIS**.
-3. Inspect **Investigation Context**, threat intelligence, evidence tables.
+2. Review **Alerts & Incidents**, filter by severity, status, rule or origin,
+   and read **Detection evidence** for the selected alert.
+3. Inspect investigation context, threat intelligence and related events.
 4. Save analyst notes, recommended action, and update status.
 
-The existing `sentry.db` is migrated automatically on first start; evidence and
-threat-intelligence columns are added without deleting alerts, notes, status or
-events. Legacy alerts display "Detection evidence is not available for this
-historical alert."
+The existing `sentry.db` is migrated automatically on first start. The
+migration is additive: `event_origin` is added to `events` and `alerts`
+without deleting events, alerts, notes, status or investigations. Historical
+rows keep `NULL` and are shown as **UNKNOWN**, never reclassified by guessing.
+Legacy alerts without evidence still display "Detection evidence is not
+available for this historical alert."
 
 ### Optional HTTP API
 
@@ -227,6 +282,7 @@ Environment variables (see `.env.example`; never commit real keys):
 
 | Variable | Purpose |
 |---|---|
+| `SENTRY_DB_PATH` | SQLite path (default `sentry.db`); point at a separate file for a demonstration store |
 | `SENTRY_ANOMALY_ENABLED` | Enable the statistical anomaly layer (`1`/`true`) |
 | `SENTRY_WEBHOOK_URL` | JSON webhook for notifications (empty = disabled) |
 | `SENTRY_NOTIFY_MIN_SEVERITY` | Minimum severity to notify (default `HIGH`) |
@@ -272,14 +328,20 @@ activity. Threat-intel "unknown" means no source has data.**
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
-Coverage includes: every rule (positive, below-threshold, out-of-window,
-missing IP/port), evidence contents, persistence, schema migration, legacy
-alerts, malformed evidence, pipeline/database wiring, rule configuration,
-DNS detection, threat-intel classification and caching, anomaly scoring,
-notification filtering/cooldown, sensor packet conversion and batching, audit
-logging, and end-to-end generated campaigns.
+Current baseline: **162 tests passing**. Coverage includes every rule
+(positive, below-threshold, out-of-window, missing IP/port), evidence contents,
+persistence, schema migration, legacy alerts, malformed evidence,
+pipeline/database wiring, rule configuration, DNS detection, threat-intel
+classification and caching, anomaly scoring, notification filtering/cooldown,
+sensor packet conversion and batching, audit logging, end-to-end generated
+campaigns, and event-origin propagation from generator/sensor through alert
+storage and origin-filtered queries.
 
-Tests use temporary databases; your `sentry.db` is never modified by the suite.
+UI verification uses Streamlit's `AppTest` to load all eight pages, generate a
+synthetic attack scenario in a temporary database, filter synthetic alerts,
+change alert lifecycle state, start/stop live capture, and exercise Event
+Explorer filtering. Tests use temporary databases; your `sentry.db` is never
+modified by the suite.
 
 ---
 
@@ -322,9 +384,10 @@ Delete `sentry.db` to remove collected data. See [SECURITY.md](SECURITY.md).
 
 ## Roadmap
 
-See [ROADMAP.md](ROADMAP.md) for planned work. v1.0 is deliberately scoped to
-the capabilities above; Windows Event Log ingestion, report exports,
-threat-intelligence integrations and multi-user deployment are future work.
+See [ROADMAP.md](ROADMAP.md) for planned work. v1.1 completes the professional
+dashboard and synthetic/live provenance work; Windows Event Log ingestion,
+report exports, threat-intelligence integrations and multi-user deployment
+remain future work.
 
 ## Contributing and security
 

@@ -10,7 +10,7 @@ from core.pipeline import SentryPipeline
 app = FastAPI(
     title="SENTRY Security Monitoring API",
     description="API for submitting security events to SENTRY.",
-    version="1.0.0",
+    version="1.1.0",
 )
 
 
@@ -137,7 +137,7 @@ def root():
     return {
         "service": "SENTRY Security Monitoring API",
         "status": "online",
-        "version": "1.0.0",
+        "version": "1.1.0",
     }
 
 

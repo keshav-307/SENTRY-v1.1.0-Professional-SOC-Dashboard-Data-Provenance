@@ -20,12 +20,19 @@ so repeated processing of one detection is suppressed for that rule's
 cooldown; NET-RECON-001 keeps its original 120-second per-source state in
 `detection_state`.
 
+Every normalized event carries `event_origin`. The generator labels its
+output `SYNTHETIC`, the network sensor labels captured packets `LIVE`, and any
+producer that does not state an origin leaves it `NULL`, which the dashboard
+presents as `UNKNOWN`. The pipeline copies the origin of the triggering
+events onto the resulting alert (mixed or absent origins become `UNKNOWN`).
+This is metadata only: detection thresholds, evidence, severity, confidence
+and deduplication are unchanged.
+
 ```
- Synthetic generator ─┐
+ Synthetic generator ─┐ event_origin=SYNTHETIC
  Live network sensor ─┼─► Normalized SecurityEvent ─► Detection engine ─► Alerts
- HTTP ingestion API  ─┘                                  │                  │
-                                                         │ evidence         │
-                                                         ▼                  ▼
+ HTTP ingestion API  ─┘ event_origin=NULL                │ evidence + origin  │
+                                                         ▼                   ▼
                                               Threat intelligence     SQLite (sentry.db)
                                               Anomaly layer                │
                                               Notifications          Streamlit dashboard
@@ -35,7 +42,7 @@ cooldown; NET-RECON-001 keeps its original 120-second per-source state in
 
 | Component | File | Responsibility |
 |---|---|---|
-| Models | `core/models.py` | `SecurityEvent` and `Alert` (evidence, threat intel) |
+| Models | `core/models.py` | `SecurityEvent` and `Alert` (evidence, threat intel, event origin) |
 | Parser | `core/parser.py` | auth.log / access.log → events |
 | Normalizer | `core/normalizer.py` | external input → events, UTC-naive timestamps |
 | Generator | `core/generator.py` | synthetic normal and attack scenarios |

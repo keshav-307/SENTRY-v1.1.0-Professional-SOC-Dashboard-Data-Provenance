@@ -1,10 +1,21 @@
 # SENTRY Roadmap
 
-SENTRY v1.0.0 is the first public release. It focuses on a complete,
-locally runnable detect → alert → investigate loop. Everything below is
-planned work, not a current capability.
+SENTRY v1.1.0 is the current release. It focuses on a complete, locally
+runnable detect → alert → investigate loop with honest data provenance and a
+professional SOC interface. Everything outside “Delivered” below is planned
+work, not a current capability.
 
-## v1.1 — Broader ingestion and reporting
+## Delivered in v1.1.0
+
+- Explicit `SYNTHETIC` / `LIVE` / `UNKNOWN` event provenance with additive
+  database migration and origin filters throughout the dashboard.
+- Dedicated Synthetic Lab that only generates after an explicit action.
+- Professional eight-page SOC dashboard with real-data charts, alert
+  investigation tabs, bounded queries and a dark theme.
+- Server-side event search and pagination.
+- Automated UI verification with Streamlit `AppTest`.
+
+## Next — Broader ingestion and reporting
 
 - Windows Event Log ingestion (Security, System, PowerShell channels).
 - Linux authentication (`auth.log`, `journald`) and syslog ingestion.
@@ -38,7 +49,7 @@ planned work, not a current capability.
 - Scalable storage backends (PostgreSQL, object storage).
 - Enterprise deployment, high availability and audit export.
 
-## Out of scope for v1.0
+## Out of scope for v1.1
 
 - Cloud-hosted multi-tenant operation.
 - Packet payload capture or full stream reassembly.
