@@ -90,6 +90,7 @@ Captured from a real local run against the preserved demo database
 | Pipeline | `core/pipeline.py` |
 | Network sensor | `sensors/network_sensor.py` |
 | Dashboard | `app_v3.py` |
+| Windows launcher | `run_sentry.bat` |
 | Ingestion API | `api.py` |
 | Rule configuration | `config/detection_rules.json` |
 | Threat feed | `config/threat_feed.json` |
@@ -140,11 +141,41 @@ Only monitor networks you are authorized to monitor.
 
 ## Running SENTRY
 
+### Windows one-click launcher (verified)
+
+After cloning the repository, double-click **`run_sentry.bat`** (or run it from
+PowerShell). It:
+
+1. checks for Python 3.10+ and explains what to install if it is missing;
+2. creates `.venv` on first run;
+3. installs `requirements.txt` only when the environment is missing packages or
+the requirements file changed;
+4. checks for Npcap and explains that it is only needed for live capture;
+5. starts Streamlit and opens the browser normally.
+
+Keep the launcher window open while SENTRY runs; press **Ctrl+C** there to stop
+it. The launcher never creates, deletes or resets `sentry.db` and never
+generates events for you.
+
+### Manual launch (Windows, verified)
+
 ```powershell
 .\.venv\Scripts\python.exe -m streamlit run app_v3.py
 ```
 
-Open <http://localhost:8501>.
+### Linux/macOS (manual, not verified in v1.0.0)
+
+SENTRY runs on Python 3.10+; the following is provided as guidance but was not
+tested for this release, so no Linux launcher is shipped.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python -m streamlit run app_v3.py
+```
+
+Open <http://localhost:8501> on any platform.
 
 1. Generate synthetic events from the sidebar, or start **Live Network
    Monitoring** on an interface.
