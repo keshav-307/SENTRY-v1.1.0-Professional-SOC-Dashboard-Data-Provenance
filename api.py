@@ -95,9 +95,7 @@ class SecurityEventBatchRequest(BaseModel):
 
 normalizer = EventNormalizer()
 
-pipeline = SentryPipeline(
-    database_path="sentry.db"
-)
+pipeline = SentryPipeline()
 
 
 def normalize_event(event: SecurityEventRequest):

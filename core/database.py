@@ -1,8 +1,44 @@
 import json
+import os
 import sqlite3
 from pathlib import Path
 
 from core.models import Alert, SecurityEvent
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_DATABASE_PATH = PROJECT_ROOT / "sentry.db"
+
+
+def resolve_database_path(database_path=None):
+    """
+    Resolve a SENTRY database path without depending on the current directory.
+
+    Precedence:
+
+    1. An explicit ``database_path`` argument.
+    2. The ``SENTRY_DB_PATH`` environment variable.
+    3. ``sentry.db`` in the project root (development database).
+
+    Relative paths are resolved against the project root, so launching from
+    another directory cannot create a second database in an unexpected place.
+    Absolute paths, including Windows drive paths, are preserved.
+    """
+
+    configured = database_path
+
+    if configured is None:
+        configured = os.environ.get("SENTRY_DB_PATH", "").strip()
+
+    if not configured:
+        return DEFAULT_DATABASE_PATH
+
+    path = Path(configured).expanduser()
+
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+
+    return path
 
 
 class SentryDatabase:
@@ -10,8 +46,8 @@ class SentryDatabase:
     SQLite database for storing SENTRY events and alerts.
     """
 
-    def __init__(self, database_path="sentry.db"):
-        self.database_path = Path(database_path)
+    def __init__(self, database_path=None):
+        self.database_path = resolve_database_path(database_path)
         self.initialize_database()
 
     def get_connection(self):

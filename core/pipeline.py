@@ -46,7 +46,7 @@ class SentryPipeline:
 
     def __init__(
         self,
-        database_path="sentry.db",
+        database_path=None,
         rules_config=None,
         threat_intel=None,
         anomaly_enabled=None,

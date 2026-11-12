@@ -11,10 +11,22 @@ env/
 
 # Local SENTRY data (never commit analyst or capture data)
 sentry.db
-sentry.db-journal
-sentry.db-wal
-sentry.db-shm
+sentry_demo.db
 *.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*-wal
+*-shm
+*.db.bak
+*.db.backup
+*.sqlite.bak
+*.sqlite3.bak
 
 # Generated logs and reports
 logs/*.log

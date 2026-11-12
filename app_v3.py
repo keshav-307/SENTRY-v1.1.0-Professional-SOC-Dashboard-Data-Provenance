@@ -28,7 +28,7 @@ import pandas as pd
 import streamlit as st
 from scapy.all import conf
 
-from core.database import SentryDatabase
+from core.database import SentryDatabase, resolve_database_path
 from core.detector import RULE_METADATA, load_rules_config
 from core.generator import EventGenerator
 from core.pipeline import SentryPipeline
@@ -36,7 +36,7 @@ from sensors.network_sensor import NetworkSensor
 
 
 SENTRY_VERSION = "1.1.0"
-DATABASE_PATH = os.environ.get("SENTRY_DB_PATH", "sentry.db")
+DATABASE_PATH = resolve_database_path()
 
 SCENARIOS = {
     "Normal Traffic": "normal",

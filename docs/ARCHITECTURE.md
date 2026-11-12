@@ -20,6 +20,13 @@ so repeated processing of one detection is suppressed for that rule's
 cooldown; NET-RECON-001 keeps its original 120-second per-source state in
 `detection_state`.
 
+Database paths are resolved centrally in `core/database.py`. Explicit paths
+take precedence, then `SENTRY_DB_PATH`, then the development database at
+`sentry.db` in the project root. Relative paths are project-relative so a
+launch from another directory cannot silently create a second database. The
+demonstration environment uses `SENTRY_DB_PATH=sentry_demo.db`; pytest injects
+a temporary database for every test.
+
 Every normalized event carries `event_origin`. The generator labels its
 output `SYNTHETIC`, the network sensor labels captured packets `LIVE`, and any
 producer that does not state an origin leaves it `NULL`, which the dashboard

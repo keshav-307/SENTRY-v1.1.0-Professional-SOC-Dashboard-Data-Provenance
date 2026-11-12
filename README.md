@@ -244,6 +244,41 @@ rows keep `NULL` and are shown as **UNKNOWN**, never reclassified by guessing.
 Legacy alerts without evidence still display "Detection evidence is not
 available for this historical alert."
 
+### Database environments
+
+SENTRY keeps development history, demonstration data and automated-test data
+in separate SQLite files.
+
+| Environment | Default path | Selection |
+|---|---|---|
+| Development | `sentry.db` | The default; your existing historical data |
+| Demonstration | `sentry_demo.db` | Set `SENTRY_DB_PATH` before launching |
+| Automated tests | Temporary pytest file | Created automatically per test, outside the project |
+
+Relative database paths are resolved against the SENTRY project root, not the
+shell's current directory. Absolute paths, including Windows drive paths, are
+used as supplied. A missing database is created with the complete current
+schema and no events; synthetic data is only created from **Synthetic Lab**.
+
+Run the demonstration environment in PowerShell:
+
+```powershell
+$env:SENTRY_DB_PATH = "sentry_demo.db"
+.\run_sentry.bat
+```
+
+That database is created on first use and keeps its demonstration events
+across restarts. It never reads or writes `sentry.db`. To return to the
+development database, remove the variable or open a new terminal:
+
+```powershell
+Remove-Item Env:SENTRY_DB_PATH
+```
+
+The HTTP API uses the same `SENTRY_DB_PATH` selection. Pytest always injects an
+isolated temporary database, so running the suite never touches either local
+database.
+
 ### Optional HTTP API
 
 ```powershell
@@ -328,7 +363,7 @@ activity. Threat-intel "unknown" means no source has data.**
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
-Current baseline: **162 tests passing**. Coverage includes every rule
+Current baseline: **171 tests passing**. Coverage includes every rule
 (positive, below-threshold, out-of-window, missing IP/port), evidence contents,
 persistence, schema migration, legacy alerts, malformed evidence,
 pipeline/database wiring, rule configuration, DNS detection, threat-intel
@@ -350,8 +385,10 @@ modified by the suite.
 Stored: normalized event metadata, alerts, evidence, reputation results,
 analyst notes, audit entries. Not stored: packet payloads.
 
-`sentry.db`, logs, reports, `.env` and virtual environments are git-ignored.
-Delete `sentry.db` to remove collected data. See [SECURITY.md](SECURITY.md).
+`sentry.db`, `sentry_demo.db`, SQLite sidecar files, logs, reports, `.env` and
+virtual environments are git-ignored. Back up `sentry.db` before deliberately
+deleting it; removing it erases collected events and investigations. See
+[SECURITY.md](SECURITY.md).
 
 ---
 

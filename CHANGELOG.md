@@ -2,6 +2,19 @@
 
 All notable changes to SENTRY are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- Database paths are resolved against the project root instead of the current
+  working directory, while absolute paths and `SENTRY_DB_PATH` remain
+  supported.
+- Test runs now receive a per-test temporary default database, so
+  pytest and CI cannot touch the development or demonstration databases.
+- Documented the development, demonstration and automated-test database
+  environments, and expanded `.gitignore` coverage for SQLite databases,
+  sidecar files and backups.
+
 ## [1.1.0] — 2026-11-12
 
 ### Added
