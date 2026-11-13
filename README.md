@@ -1,5 +1,7 @@
 # 🛡️ SENTRY — Security Monitoring & Threat Detection Platform
 
+[![CI](https://github.com/keshav-307/SENTRY-v1.1.0-Professional-SOC-Dashboard-Data-Provenance/actions/workflows/tests.yml/badge.svg)](https://github.com/keshav-307/SENTRY-v1.1.0-Professional-SOC-Dashboard-Data-Provenance/actions/workflows/tests.yml)
+
 SENTRY is a self-contained, rule-based SIEM with optional threat-intelligence
 enrichment, statistical anomaly scoring, live network capture, and an analyst
 dashboard. Every alert explains **which rule fired, which exact events and
