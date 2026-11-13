@@ -19,9 +19,6 @@ jobs:
     env:
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: "1"
-      # Defence in depth: even an accidental no-argument database construction
-      # outside pytest's fixture points at runner temp, never the repository.
-      SENTRY_DB_PATH: ${{ runner.temp }}/sentry-ci-guard.db
 
     steps:
       - name: Check out repository
@@ -40,6 +37,11 @@ jobs:
           python -m pip install -r requirements.txt
 
       - name: Run test suite
+        env:
+          # Defence in depth: even an accidental no-argument database
+          # construction outside pytest's fixture points at runner temp,
+          # never the repository.
+          SENTRY_DB_PATH: ${{ runner.temp }}/sentry-ci-guard.db
         run: python -m pytest tests -q
 
       - name: Verify tests created no repository databases
