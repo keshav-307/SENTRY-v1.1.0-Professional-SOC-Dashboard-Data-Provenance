@@ -1,0 +1,133 @@
+name: Bug report
+description: Report a reproducible problem with SENTRY.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        > [!WARNING]
+        > Do not include credentials, API keys, tokens, personal data, production
+        > database files, or sensitive network information in this report.
+
+        Please search existing issues before submitting a new one.
+
+  - type: input
+    id: bug_summary
+    attributes:
+      label: Bug summary
+      description: A short, specific description of the problem.
+      placeholder: Dashboard crashes when filtering alerts by LIVE origin
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What happened, and what part of SENTRY were you using?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction_steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest sequence that reliably reproduces the issue.
+      placeholder: |
+        1. Start SENTRY with ...
+        2. Open ...
+        3. Select ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected behaviour
+      description: What did you expect SENTRY to do?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual_behavior
+    attributes:
+      label: Actual behaviour
+      description: What did SENTRY do instead?
+    validations:
+      required: true
+
+  - type: input
+    id: sentry_version
+    attributes:
+      label: SENTRY version or commit
+      description: The release tag, version shown in the UI, or commit hash.
+      placeholder: v1.1.0 or 198dbdb
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, Python version, and relevant dependencies or capture setup.
+      placeholder: |
+        OS: Windows 11
+        Python: 3.14.7
+        Streamlit: 1.63.0
+        Scapy/Npcap: Scapy 2.7.0, Npcap available
+    validations:
+      required: false
+
+  - type: dropdown
+    id: event_origin
+    attributes:
+      label: Event origin
+      description: Which origin best describes the events involved?
+      options:
+        - LIVE
+        - SYNTHETIC
+        - UNKNOWN
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: affected_component
+    attributes:
+      label: Affected component
+      description: Select the area where the problem occurs.
+      options:
+        - Dashboard
+        - Detection engine
+        - Pipeline
+        - Database
+        - Network sensor
+        - Event generator
+        - API
+        - Installation
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: error_messages
+    attributes:
+      label: Error messages or logs
+      description: Paste relevant errors after removing credentials, personal data, and sensitive network details.
+      placeholder: Paste sanitized tracebacks or log lines here.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: reproducibility
+    attributes:
+      label: Reproducibility
+      description: How often can you reproduce the problem?
+      options:
+        - Always
+        - Sometimes
+        - Once
+        - Unable to reproduce
+    validations:
+      required: true
