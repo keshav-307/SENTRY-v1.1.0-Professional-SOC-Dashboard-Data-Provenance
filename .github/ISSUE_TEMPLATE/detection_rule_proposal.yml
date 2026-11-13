@@ -1,0 +1,117 @@
+name: Detection rule proposal
+description: Propose an evidence-based detection rule for SENTRY.
+title: "[Detection]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Proposals should describe evidence-based detection logic and test
+        scenarios. Do not fabricate alerts, scores, reputation results, or
+        unsupported claims. Unknown values must remain explicitly unknown.
+
+  - type: input
+    id: rule_name
+    attributes:
+      label: Proposed rule name
+      description: A concise name for the behaviour being detected.
+      placeholder: Repeated SMB authentication failures
+    validations:
+      required: true
+
+  - type: input
+    id: rule_id
+    attributes:
+      label: Proposed rule ID
+      description: Optional. Use an existing naming convention if you know one.
+      placeholder: SENTRY-SMB-BRUTE-001
+    validations:
+      required: false
+
+  - type: textarea
+    id: threat_scenario
+    attributes:
+      label: Threat or attack scenario
+      description: Describe the adversary behaviour and why it matters.
+      placeholder: An attacker repeatedly guesses credentials against SMB to gain initial access.
+    validations:
+      required: true
+
+  - type: textarea
+    id: detection_need
+    attributes:
+      label: Why is this detection needed?
+      description: Explain the coverage gap and how this complements existing rules.
+    validations:
+      required: true
+
+  - type: textarea
+    id: detection_logic
+    attributes:
+      label: Proposed detection logic or conditions
+      description: Include the event sources, fields, threshold, correlation window, and grouping keys.
+      placeholder: |
+        Trigger when five or more login_failure events share the same source_ip
+        and destination_port 445 within 120 seconds.
+    validations:
+      required: true
+
+  - type: textarea
+    id: event_fields
+    attributes:
+      label: Expected event fields and evidence
+      description: List the fields SENTRY must capture and the evidence an analyst should see.
+      placeholder: |
+        Required fields: timestamp, source_ip, destination_ip, destination_port, username, outcome
+        Evidence: triggering events, expected vs observed count, correlation window
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: Suggested severity based on impact and confidence.
+      options:
+        - Critical
+        - High
+        - Medium
+        - Low
+        - Informational
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: mitre_technique
+    attributes:
+      label: MITRE ATT&CK technique
+      description: Optional technique ID and name.
+      placeholder: "T1110.001 (Brute Force: Password Guessing)"
+    validations:
+      required: false
+
+  - type: textarea
+    id: false_positives
+    attributes:
+      label: Potential false positives
+      description: Describe legitimate activity that could trigger this rule and how to distinguish it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: test_scenarios
+    attributes:
+      label: Suggested test scenarios
+      description: Include positive, below-threshold, out-of-window, and missing-data cases where relevant.
+    validations:
+      required: true
+
+  - type: textarea
+    id: references
+    attributes:
+      label: References
+      description: Optional links to advisories, research, documentation, or prior art.
+      placeholder: |
+        https://...
+    validations:
+      required: false
