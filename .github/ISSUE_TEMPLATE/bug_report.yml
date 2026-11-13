@@ -1,6 +1,9 @@
 name: Bug report
 description: Report a reproducible problem with SENTRY.
 title: "[Bug]: "
+labels:
+  - bug
+  - triage
 body:
   - type: markdown
     attributes:

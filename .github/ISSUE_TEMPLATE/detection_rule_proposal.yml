@@ -1,6 +1,9 @@
 name: Detection rule proposal
 description: Propose an evidence-based detection rule for SENTRY.
 title: "[Detection]: "
+labels:
+  - detection-rule
+  - triage
 body:
   - type: markdown
     attributes:
