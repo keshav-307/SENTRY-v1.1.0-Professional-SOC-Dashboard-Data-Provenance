@@ -1,0 +1,54 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Pytest (Windows, Python 3.14)
+    runs-on: windows-latest
+    timeout-minutes: 20
+
+    env:
+      PYTHONIOENCODING: utf-8
+      PYTHONUTF8: "1"
+      # Defence in depth: even an accidental no-argument database construction
+      # outside pytest's fixture points at runner temp, never the repository.
+      SENTRY_DB_PATH: ${{ runner.temp }}/sentry-ci-guard.db
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Run test suite
+        run: python -m pytest tests -q
+
+      - name: Verify tests created no repository databases
+        shell: pwsh
+        run: |
+          $databases = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Include *.db,*.sqlite,*.sqlite3,*-wal,*-shm -ErrorAction SilentlyContinue
+          if ($databases) {
+            Write-Error "Database files were created in the repository:"
+            $databases | ForEach-Object { Write-Error $_.FullName }
+            exit 1
+          }
+          Write-Host "No database or SQLite sidecar files were created in the repository."
